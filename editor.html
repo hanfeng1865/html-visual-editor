@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HTML 可视化编辑器</title>
+  <link rel="stylesheet" href="editor.css?v=4" />
+</head>
+<body>
+  <div class="editor-shell">
+    <header class="editor-toolbar">
+      <div class="editor-brand">
+        <div class="editor-logo">&lt;/&gt;</div>
+        <div><strong>HTML 可视化编辑器</strong><span>关联本地项目 · 保存写回源码</span></div>
+      </div>
+      <div class="toolbar-group mode-switch" aria-label="编辑模式">
+        <button type="button" data-mode="edit">编辑</button>
+        <button class="active" type="button" data-mode="preview">预览</button>
+      </div>
+      <div class="toolbar-group viewport-switch" aria-label="画布尺寸">
+        <button class="active" type="button" data-viewport="desktop" title="桌面">桌面</button>
+        <button type="button" data-viewport="tablet" title="平板">平板</button>
+        <button type="button" data-viewport="mobile" title="手机">手机</button>
+      </div>
+      <div class="toolbar-actions">
+        <button id="undo-button" type="button" title="撤销 (⌘/Ctrl+Z)">↶ 撤销</button>
+        <button id="redo-button" type="button" title="重做 (⌘/Ctrl+Shift+Z)">↷ 重做</button>
+        <button id="reload-button" type="button" title="重新读取当前 HTML 与本地资源">刷新代码</button>
+        <button id="editor-changes-toggle" type="button" aria-pressed="false" title="显示或隐藏手动框选的标记">显示手动标记</button>
+        <button id="editor-box-toggle" type="button" aria-pressed="false" title="在当前画布拖动框选并保存手动改动点">框选改动</button>
+        <button id="save-button" class="primary" type="button">保存到项目</button>
+        <button id="view-first-button" type="button">查看初版</button>
+        <button id="compare-button" type="button">上下对比</button>
+        <button id="history-button" type="button">恢复历史版本</button>
+        <button id="export-menu-button" type="button">导出 ▾</button>
+        <div class="export-menu" id="export-menu" hidden>
+          <button id="export-json-button" type="button">导出调整 JSON</button>
+          <button id="export-html-button" type="button">导出可运行 HTML</button>
+          <button id="import-button" type="button">导入调整 JSON</button>
+          <button id="reset-button" class="danger" type="button">清空全部调整</button>
+        </div>
+        <input id="import-file" type="file" accept="application/json,.json" hidden />
+      </div>
+    </header>
+
+    <div class="project-bar" aria-label="项目与页面">
+      <button id="open-project-button" type="button">▱ 打开项目文件夹</button>
+      <label>项目<select id="project-select" aria-label="当前项目"><option value="builtin">当前驾驶舱原型</option></select></label>
+      <button id="remove-project-button" type="button" title="仅从编辑器列表移除当前项目，不删除原文件夹" disabled>移除项目</button>
+      <label>页面<select id="page-select" aria-label="当前 HTML 页面"><option>正在读取…</option></select></label>
+      <span id="project-path" title="项目文件夹"></span><span class="source-preserved">保存前自动备份</span>
+    </div>
+    <div id="project-error" role="alert" hidden></div>
+    <main class="editor-main">
+      <aside class="editor-help" aria-label="图层与组件">
+        <button id="layers-toggle" class="editor-help-toggle" type="button" aria-expanded="false" title="展开图层与组件"><span class="help-toggle-icon">▤</span><span class="help-toggle-label">图层与组件</span><span class="help-toggle-arrow">›</span></button>
+        <div id="structure-panel" hidden>
+          <div class="structure-tabs"><button type="button" data-structure-tab="layers" class="active">图层</button><button type="button" data-structure-tab="insert">新增组件</button></div>
+          <section id="layers-panel"><input id="layer-search" type="search" placeholder="搜索文字、图层或 ID" aria-label="搜索图层" /><p class="structure-hint">点击选择；拖动图层到容器可移入。隐藏的元素也可在这里找到。</p><div id="layer-tree" aria-label="页面图层"></div></section>
+          <section id="insert-panel" hidden><p class="structure-hint">将组件拖到画布里的目标位置，松手添加。绿色边框显示放入的容器，不挤动现有内容；也可选中容器后点击添加。图片请点击选择本地文件。</p><div class="component-palette"><button data-insert="card">▣ 指标卡片</button><button data-insert="container">▤ 空白容器</button><button data-insert="heading">T 标题</button><button data-insert="text">¶ 文字</button><button data-insert="button">▭ 按钮</button><button data-insert="divider">― 分隔线</button><button data-insert="circle">○ 圆形</button><button data-insert="rectangle">▭ 矩形</button><button data-insert="image">▧ 图片</button></div></section>
+        </div>
+        <button id="editor-help-toggle" class="editor-help-toggle" type="button" aria-expanded="false" aria-controls="editor-help-content" title="展开使用说明">
+          <span class="help-toggle-icon" aria-hidden="true">?</span>
+          <span class="help-toggle-label">使用说明</span>
+          <span class="help-toggle-arrow" aria-hidden="true">›</span>
+        </button>
+        <div id="editor-help-content" class="editor-help-content" hidden>
+          <h2>怎么编辑</h2>
+          <ol>
+            <li><b>指到文字选文字，指到图标选图标</b>；点击卡片空白处选整卡，双击文字直接修改。</li>
+            <li><b>Shift + 单击</b>多选，统一修改样式。</li>
+            <li>点击右侧层级，选择卡片内部的文字或容器。</li>
+            <li>按住选中模块并拖动，可在同一容器内排序。</li>
+          </ol>
+          <div class="help-card">
+            <b>AI 协作方式</b>
+            <p>在原文件夹中修改 HTML/CSS 后点击“刷新代码”。手动调整先作为浏览器草稿自动保存，确认后点击“保存到项目”写入本地文件。</p>
+          </div>
+          <div class="help-card subtle">
+            <b>当前选择</b>
+            <p id="selection-path">尚未选择元素</p><p>点击文字或图标即可直接选中；点卡片空白处选整卡。</p>
+          </div>
+        </div>
+      </aside>
+
+      <section class="canvas-area">
+        <button id="element-resize-handle" type="button" title="拖动调整尺寸" aria-label="拖动调整所选元素尺寸" hidden>↘</button>
+        <div class="canvas-status">
+          <span><i class="status-dot"></i><b id="mode-label">预览模式</b><span id="mode-hint"> · 可直接操作页面</span></span>
+          <span id="save-status">浏览器草稿自动保存 · 点击“保存到项目”持久化</span>
+        </div>
+        <div id="source-change-banner" hidden>检测到外部代码修改。草稿已保留，保存时会检查冲突。<button id="source-refresh" type="button">载入最新代码</button></div>
+        <div class="canvas-controls">
+          <span id="canvas-dimensions">桌面 · 1440 × 900</span>
+          <label for="canvas-zoom">缩放</label>
+          <select id="canvas-zoom" aria-label="画布缩放">
+            <option value="width">铺满宽度</option>
+            <option value="fit">适应窗口</option>
+            <option value="0.5">50%</option>
+            <option value="0.75">75%</option>
+            <option value="1">100%</option>
+            <option value="1.25">125%</option>
+            <option value="1.5">150%</option>
+          </select>
+          <span id="zoom-readout"></span>
+          <span class="canvas-tip">页面宽度保持不变 · 长页面在画布内滚动</span>
+        </div>
+        <div id="canvas-scroll" class="canvas-scroll"><div id="canvas-stage" class="canvas-stage">
+        <div class="canvas-frame desktop" id="canvas-frame">
+          <iframe id="prototype-frame" src="about:blank" title="当前 HTML 页面"></iframe>
+        </div></div></div>
+      </section>
+
+      <div id="text-toolbar" class="text-toolbar" role="toolbar" aria-label="文字编辑" hidden>
+        <select id="text-tool-preset" aria-label="文字样式"><option value="">样式</option><option value="h1">标题 1</option><option value="h2">标题 2</option><option value="h3">标题 3</option><option value="body">正文</option></select>
+        <span class="text-tool-group"><button type="button" data-text-action="bold" aria-label="粗体" title="粗体"><b>B</b></button><button type="button" data-text-action="italic" aria-label="斜体" title="斜体"><i>I</i></button><button type="button" data-text-action="underline" aria-label="下划线" title="下划线"><u>U</u></button><button type="button" data-text-action="strike" aria-label="删除线" title="删除线"><s>S</s></button></span>
+        <span class="text-tool-group"><button type="button" data-text-action="size-down" aria-label="缩小字号">A−</button><input id="text-tool-size" type="number" min="8" max="200" aria-label="字号，像素" /><button type="button" data-text-action="size-up" aria-label="放大字号">A+</button></span>
+        <span class="text-tool-group"><button type="button" data-text-align="left" aria-label="左对齐">左</button><button type="button" data-text-align="center" aria-label="居中对齐">中</button><button type="button" data-text-align="right" aria-label="右对齐">右</button></span>
+        <label class="text-tool-color" title="文字颜色">字<input id="text-tool-color" type="color" aria-label="文字颜色" /></label><label class="text-tool-color" title="背景颜色">底<input id="text-tool-background" type="color" aria-label="背景颜色" /></label>
+        <span class="text-tool-group"><button type="button" id="text-tool-copy">复制</button><button type="button" id="text-tool-paste">粘贴</button><button type="button" data-text-action="clear">清除</button></span>
+      </div>
+
+      <aside class="inspector">
+        <div id="inspector-fields" hidden>
+          <div class="inspector-head">
+            <div><span>正在编辑</span><b id="selected-name">元素</b></div>
+            <button id="clear-selection" type="button" title="取消选择">×</button>
+          </div>
+
+          <section class="property-section" id="text-section">
+            <h3>文字内容</h3>
+            <textarea id="prop-text" rows="3" placeholder="输入文字"></textarea>
+          </section>
+
+          <section class="property-section">
+            <h3>排版</h3>
+            <label>字号<div><input id="prop-font-size" type="number" min="8" max="96" /><span>px</span></div></label>
+            <label>字重<select id="prop-font-weight"><option value="">默认</option><option value="400">常规</option><option value="500">中等</option><option value="600">半粗</option><option value="700">粗体</option></select></label>
+            <label>文字颜色<div class="color-field"><input id="prop-color" type="color" /><input id="prop-color-text" type="text" /></div></label>
+            <label>对齐<select id="prop-text-align"><option value="">默认</option><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label>
+          </section>
+
+          <section class="property-section">
+            <h3>外观</h3>
+            <label>背景颜色<div class="color-field"><input id="prop-background" type="color" /><input id="prop-background-text" type="text" /></div></label>
+            <label>圆角<div><input id="prop-radius" type="number" min="0" max="80" /><span>px</span></div></label>
+            <label>透明度<div><input id="prop-opacity" type="number" min="0" max="100" /><span>%</span></div></label>
+          </section>
+
+          <section class="property-section">
+            <h3>尺寸</h3>
+            <div class="two-column">
+              <label>宽度<div><input id="prop-width" type="text" placeholder="auto" /></div></label>
+              <label>高度<div><input id="prop-height" type="text" placeholder="auto" /></div></label>
+
+            </div>
+          </section>
+
+          <section class="property-section" id="format-section">
+            <h3>格式刷</h3><div class="quick-actions"><button id="copy-format" type="button">复制格式</button><button id="paste-format" type="button" disabled>应用格式</button></div>
+            <p id="format-hint" class="field-hint">复制后，选择一个或多个目标再应用。仅复制外观和文字样式。</p>
+          </section>
+
+          <section class="property-section" id="card-section" hidden>
+            <h3>卡片内容</h3><div id="card-fields"></div>
+            <p class="field-hint">只修改此卡片的演示展示，不联动详情与统计计算。</p>
+            <button id="apply-card-content" class="section-primary" type="button">应用卡片内容</button>
+          </section>
+
+          <section class="property-section" id="structure-section">
+            <h3>结构操作</h3><div class="quick-actions"><button id="duplicate-element" type="button">复制一份</button><button id="toggle-element-visibility" type="button">隐藏元素</button></div>
+            <p class="field-hint">选中组件后按 ⌘C / Ctrl+C 复制，⌘V / Ctrl+V 粘贴副本。复制保留当前外观和文字。副本中的按钮、数据联动需另行配置。</p>
+          </section>
+
+          <section class="property-section" id="table-row-section" hidden>
+            <h3>表格行列</h3>
+            <div class="quick-actions"><button id="add-table-row" type="button">添加行</button><button id="delete-table-row" class="danger" type="button">删除行</button></div>
+            <div class="quick-actions"><button id="add-table-column" type="button">添加列</button><button id="delete-table-column" class="danger" type="button">删除列</button></div>
+            <p id="table-structure-hint" class="field-hint">选中单元格后在当前行或列之后添加，或删除所在行列；选中整张表时在末尾添加。可撤销。</p>
+          </section>
+
+          <section class="property-section" id="movement-section">
+            <h3>移动与换位</h3>
+            <div class="movement-controls"><button id="pointer-move" class="active" type="button" aria-pressed="true">鼠标微调</button><button id="pointer-swap" type="button" aria-pressed="false">拖动换位</button></div>
+            <div class="move-arrows"><span></span><button type="button" data-nudge="up" aria-label="向上微调">↑</button><span></span><button type="button" data-nudge="left" aria-label="向左微调">←</button><button id="reset-offset" type="button" title="归零所选元素偏移" aria-label="偏移归零">·</button><button type="button" data-nudge="right" aria-label="向右微调">→</button><span></span><button type="button" data-nudge="down" aria-label="向下微调">↓</button><span></span></div>
+            <div id="movement-offset"></div>
+            <div class="quick-actions"><button id="place-on-page" type="button">放到页面自由摆放</button></div>
+            <p class="field-hint">直接拖动可跨容器，绿色边框表示放入位置；按住 ⌘ / Ctrl 拖动可放在页面上自由摆放。粉色线辅助对齐，Alt 取消吸附。方向键移动 1px，Shift + 方向键移动 10px。换位仅限同级元素。Esc 取消拖动。</p>
+          </section>
+
+
+          <section class="property-section">
+            <h3>排列顺序与删除</h3>
+            <p id="order-hint" class="field-hint"></p>
+            <div class="quick-actions">
+              <button id="move-up-button" type="button">排列提前一位</button>
+              <button id="move-down-button" type="button">排列延后一位</button>
+              <button id="delete-button" class="danger" type="button">删除元素</button>
+              <button id="restore-element-button" type="button">恢复元素</button>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </main>
+  </div>
+  <dialog id="comparison-dialog" aria-labelledby="comparison-title">
+    <div class="project-dialog-head"><h2 id="comparison-title">上下对比</h2><button id="comparison-close" type="button" aria-label="关闭版本对比">×</button></div>
+    <div class="comparison-controls"><label>页面 <select id="comparison-page"></select></label><label>历史版本 <select id="comparison-version"></select></label></div>
+    <p id="comparison-status" role="status"></p>
+    <div id="comparison-panes"><section><h3 id="comparison-old-label">第一个版本</h3><div class="comparison-viewport"><iframe id="comparison-old" title="历史版本" sandbox="allow-scripts allow-same-origin"></iframe></div></section><section id="comparison-current-pane"><h3>当前效果（包含本页未保存修改）</h3><div class="comparison-viewport"><iframe id="comparison-now" title="当前效果" sandbox="allow-scripts allow-same-origin"></iframe></div></section></div>
+  </dialog>
+  <dialog id="source-dialog" aria-labelledby="source-dialog-title">
+    <div class="project-dialog-head"><h2 id="source-dialog-title">保存到源码</h2><button id="source-dialog-close" type="button" aria-label="关闭">×</button></div>
+    <p id="source-dialog-status" role="status"></p><div id="source-conflicts"></div>
+    <button id="source-confirm" class="section-primary" type="button" hidden>按以上选择保存</button>
+  </dialog>
+  <dialog id="history-dialog" aria-labelledby="history-title">
+    <div class="project-dialog-head"><h2 id="history-title">恢复历史版本</h2><button id="history-close" type="button" aria-label="关闭">×</button></div>
+    <p class="field-hint">先选一个版本查看效果，确认后再恢复。恢复前会自动保留你现在的修改。</p>
+    <p id="history-status" role="status"></p>
+    <div class="history-workspace"><div id="history-list"></div><div class="history-detail">
+      <h3 id="history-preview-title">选择一个版本</h3>
+      <p id="history-preview-note" class="field-hint">右侧显示所选版本的页面效果，可滚动查看。</p>
+      <label class="history-page-control">预览页面<select id="history-preview-page" aria-label="历史预览页面"></select></label>
+      <p id="history-page-note" class="field-hint"></p>
+      <div id="history-preview-viewport"><iframe id="history-preview" title="历史版本页面预览" sandbox="allow-scripts allow-same-origin"></iframe></div>
+      <button id="history-restore" type="button" class="section-primary" disabled>恢复这个版本</button>
+      <p class="field-hint">预览使用备份的源码。恢复前会列出受影响的 HTML、CSS、JS 文件，确认后才写入。</p>
+    </div></div>
+  </dialog>
+  <dialog id="project-dialog" aria-labelledby="project-dialog-title">
+    <form id="open-project-form">
+      <div class="project-dialog-head"><div><h2 id="project-dialog-title">打开项目文件夹</h2><p>关联原文件夹，保留 HTML、CSS、JS 与图片的目录关系。</p></div><button id="close-project-dialog" type="button" aria-label="关闭">×</button></div>
+      <button id="choose-project-folder" type="button" class="choose-folder-button">选择本机文件夹…</button>
+      <label for="project-folder-path">或粘贴文件夹完整路径</label>
+      <input id="project-folder-path" type="text" placeholder="/Users/你的名字/Documents/我的原型" autocomplete="off" />
+      <p class="project-note">仅关联，不搬移文件。编辑记录单独保存，原 HTML/CSS 不会自动覆盖。支持普通静态页面；需要构建或后端的项目，请先生成静态页面。</p>
+      <p id="project-open-status" role="status"></p>
+      <div class="project-dialog-actions"><button type="submit" id="confirm-open-project">关联并打开</button></div>
+    </form>
+  </dialog>
+  <div class="toast" id="toast" role="status"></div>
+  <script type="module" src="editor.js?v=20"></script>
+</body>
+</html>

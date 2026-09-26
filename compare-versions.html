@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>驾驶舱版本对比 · V1.0 / 当前开发版</title>
+  <style>
+    :root { color-scheme:light; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; background:#edf2f6; color:#20364b; --top-pane-height:50%; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-width:900px; }
+    header { height:48px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:0 16px; border-bottom:1px solid #d6e0e8; background:#fff; box-shadow:0 1px 5px rgba(38,63,84,.08); }
+    header div { display:flex; align-items:center; gap:10px; }
+    h1 { margin:0; font-size:15px; }
+    .note { color:#7b8c9c; font-size:11px; }
+    a,button { height:28px; display:inline-flex; align-items:center; padding:0 10px; border:1px solid #d5e0e9; border-radius:5px; background:#fff; color:#29618f; font-size:11px; font-weight:700; text-decoration:none; cursor:pointer; }
+    button.active { border-color:#8ebbe4; background:#eaf4ff; color:#146ab3; }
+    header h1, header button, header a { white-space:nowrap; flex-shrink:0; }
+    #annotation-status { max-width:230px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    @media(max-width:1250px) { header .note { display:none; } #annotation-status { max-width:170px; } }
+    #changes-toggle { gap:5px; }
+    #changes-toggle::before { content:"◉"; font-size:12px; line-height:1; }
+    main { height:calc(100vh - 48px); display:grid; grid-template-columns:1fr; grid-template-rows:minmax(110px,var(--top-pane-height)) 14px minmax(110px,1fr); padding:8px; }
+    section { min-width:0; display:grid; grid-template-rows:34px minmax(0,1fr); overflow:hidden; border:1px solid #d9e3eb; border-radius:8px; background:#fff; }
+    section h2 { margin:0; display:flex; align-items:center; justify-content:space-between; padding:0 11px; border-bottom:1px solid #e4eaf0; font-size:12px; }
+    section h2 span { color:#8a99a6; font-size:10px; font-weight:500; }
+    iframe { width:100%; height:100%; border:0; background:#f2f5f7; }
+    .splitter { position:relative; display:flex; align-items:center; justify-content:center; cursor:row-resize; touch-action:none; outline:none; user-select:none; }
+    .splitter::before { content:""; width:100%; height:1px; background:#c8d5df; transition:height .15s,background .15s,box-shadow .15s; }
+    .splitter::after { content:""; position:absolute; width:46px; height:5px; border-radius:999px; background:#8ba2b5; box-shadow:0 0 0 3px #edf2f6; transition:background .15s,transform .15s; }
+    .splitter:hover::before,.splitter:focus-visible::before,.splitter.dragging::before { height:3px; background:#4a95d8; box-shadow:0 0 0 3px rgba(74,149,216,.12); }
+    .splitter:hover::after,.splitter:focus-visible::after,.splitter.dragging::after { background:#1976c5; transform:scaleX(1.08); }
+    .splitter:focus-visible { border-radius:5px; box-shadow:inset 0 0 0 2px rgba(25,118,197,.28); }
+    body.resizing { cursor:row-resize; user-select:none; }
+    body.resizing iframe { pointer-events:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>原型版本对比</h1><span class="note">上方为冻结的 V1.0，下方为持续修改的当前开发版 · 演示数据</span></div>
+    <div><button id="stack" class="active" type="button" disabled>上下</button><button id="changes-toggle" type="button" aria-pressed="false" title="显示或隐藏手动框选的标记">显示手动标记</button><button id="box-toggle" type="button" aria-pressed="false">框选改动</button><span id="annotation-status" role="status" style="font-size:11px;color:#718195;margin:0 8px"></span><a id="back" href="../prototype.html#human-admin">返回开发版</a></div>
+  </header>
+  <main>
+    <section><h2>V1.0 <span>冻结基线</span></h2><iframe id="baseline" title="V1.0 基线版本"></iframe></section>
+    <div id="splitter" class="splitter" role="separator" aria-label="拖动调整上下版本显示区域" aria-orientation="horizontal" aria-valuemin="15" aria-valuemax="85" aria-valuenow="50" tabindex="0" title="上下拖动调整区域，双击恢复均分"></div>
+    <section><h2>当前开发版 <span>实时文件</span></h2><iframe id="current" title="当前开发版本"></iframe></section>
+  </main>
+  <script>
+    const allowed = ['operating','procurement','finance','human-admin'];
+    const requestedCockpit = window.__visualEditorCockpit || location.hash.slice(1);
+    const cockpit = allowed.includes(requestedCockpit) ? requestedCockpit : 'human-admin';
+    const baselineFrame = document.getElementById('baseline');
+    const currentFrame = document.getElementById('current');
+    if (window.__visualEditorOffline) {
+      baselineFrame.srcdoc = window.__visualEditorOffline.page('baseline', cockpit);
+      currentFrame.srcdoc = window.__visualEditorOffline.page('current', cockpit);
+    } else {
+      baselineFrame.src = `../index-v1.0.html#${cockpit}`;
+      currentFrame.src = `../prototype.html?visual-edits=3#${cockpit}`;
+    }
+    document.getElementById('back').href = `../prototype.html?visual-edits=3#${cockpit}`;
+
+    const changesToggle = document.getElementById('changes-toggle');
+    let showChanges = false;
+    let changeObserver = null;
+    let changeRefreshTimer = 0;
+    let trackedFrameWindow = null;
+
+    let annotations = { version:1, boxes:[], notes:{}, colors:{} };
+    let annotationSaveQueue = Promise.resolve();
+    let selectionLayer = null;
+    let selectionKeyHandler = null;
+    let selectedManualBoxId = null;
+    const annotationStatus = document.getElementById('annotation-status');
+    const boxToggle = document.getElementById('box-toggle');
+    let annotationsReady = loadAnnotations();
+
+    async function loadAnnotations() {
+      try {
+        if (window.__visualEditorOffline) annotations = window.__visualEditorOffline.annotations;
+        else {
+          const response = await fetch('/api/change-annotations', {cache:'no-store'});
+          if (!response.ok) throw new Error('请重启本地开发服务后保存标识');
+          annotations = await response.json();
+        }
+        annotations.notes ||= {};
+        annotations.colors ||= {};
+      } catch (error) { annotationStatus.textContent = error.message; }
+    }
+
+    function saveAnnotations() {
+      const snapshot = JSON.parse(JSON.stringify(annotations));
+      annotationStatus.textContent = '正在保存标识…';
+      annotationSaveQueue = annotationSaveQueue.catch(() => {}).then(async () => {
+        if (window.__visualEditorOffline) {
+          const persisted = window.__visualEditorOffline.saveAnnotations(snapshot);
+          annotationStatus.textContent = persisted ? '标识已保存到此浏览器' : '标识仅保留在本次打开中';
+        } else {
+          const response = await fetch('/api/change-annotations', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(snapshot)});
+          if (!response.ok) throw new Error('标识保存失败，请重试');
+          annotationStatus.textContent = '标识已保存';
+        }
+      }).catch(error => { annotationStatus.textContent = error.message; });
+    }
+
+    function markerCockpit() {
+      return currentFrame.contentDocument?.querySelector('.cockpit-view.active')?.id.replace(/^cockpit-/, '') || cockpit;
+    }
+
+    function markerContext(scope) {
+      return scope ? (scope.querySelector('h2, h1, [role="heading"]')?.textContent.trim() || scope.id || 'dialog') : '';
+    }
+
+    function markerTheme(noteKey) {
+      return annotations.colors?.[noteKey] === 'red'
+        ? {name:'red', solid:'#e5484d', shadow:'rgba(229,72,77,.14)', button:'#c9343a'}
+        : {name:'blue', solid:'#2f80ed', shadow:'rgba(47,128,237,.12)', button:'#246dcc'};
+    }
+
+    function addDismissButton(marker, remove, theme) {
+      const button = marker.ownerDocument.createElement('button');
+      button.type = 'button';
+      button.textContent = '×';
+      button.title = '移除此改动标识（不修改内容）';
+      button.setAttribute('aria-label', '移除此改动标识');
+      Object.assign(button.style, {position:'absolute',zIndex:'3',right:'-9px',top:'-9px',width:'20px',height:'20px',borderRadius:'50%',border:`1px solid ${theme.solid}`,background:'#fff',color:theme.button,cursor:'pointer',pointerEvents:'auto',padding:'0',lineHeight:'16px'});
+      button.addEventListener('click', event => {
+        event.preventDefault(); event.stopPropagation();
+        remove(); saveAnnotations(); renderChangeMarkers();
+      });
+      marker.appendChild(button);
+    }
+
+    function annotationNoteKey(box) { return `box:${box.id}`; }
+
+    function addResizeHandles(marker, box, target, rect, theme) {
+      const directions = {
+        nw:['0','0','nwse-resize'], n:['50%','0','ns-resize'], ne:['100%','0','nesw-resize'],
+        e:['100%','50%','ew-resize'], se:['100%','100%','nwse-resize'], s:['50%','100%','ns-resize'],
+        sw:['0','100%','nesw-resize'], w:['0','50%','ew-resize'],
+      };
+      Object.entries(directions).forEach(([direction, [left, top, cursor]]) => {
+        const handle = marker.ownerDocument.createElement('span');
+        handle.title = '调整手动标记范围';
+        Object.assign(handle.style, {position:'absolute',zIndex:'1',left,top,width:'10px',height:'10px',border:`2px solid ${theme.solid}`,borderRadius:'50%',background:'#fff',transform:'translate(-50%,-50%)',cursor,pointerEvents:'auto'});
+        handle.addEventListener('pointerdown', event => {
+          event.preventDefault(); event.stopPropagation();
+          const startX = event.clientX, startY = event.clientY;
+          const initial = {x:box.x,y:box.y,width:box.width,height:box.height};
+          const bounds = target.getBoundingClientRect();
+          const anchorWidth = Math.max(target.scrollWidth, bounds.width), anchorHeight = Math.max(target.scrollHeight, bounds.height);
+          const minWidth = 12 / anchorWidth, minHeight = 12 / anchorHeight;
+          handle.setPointerCapture(event.pointerId);
+          const move = moveEvent => {
+            const dx = (moveEvent.clientX - startX) / anchorWidth;
+            const dy = (moveEvent.clientY - startY) / anchorHeight;
+            let x=initial.x,y=initial.y,width=initial.width,height=initial.height;
+            if (direction.includes('e')) width=Math.max(minWidth,Math.min(1-x,initial.width+dx));
+            if (direction.includes('s')) height=Math.max(minHeight,Math.min(1-y,initial.height+dy));
+            if (direction.includes('w')) { x=Math.max(0,Math.min(initial.x+initial.width-minWidth,initial.x+dx)); width=initial.width+initial.x-x; }
+            if (direction.includes('n')) { y=Math.max(0,Math.min(initial.y+initial.height-minHeight,initial.y+dy)); height=initial.height+initial.y-y; }
+            Object.assign(box,{x,y,width,height});
+            marker.style.left=`${rect.left+(x-initial.x)*anchorWidth}px`;
+            marker.style.top=`${rect.top+(y-initial.y)*anchorHeight}px`;
+            marker.style.width=`${Math.max(12,rect.right-rect.left+(width-initial.width)*anchorWidth)}px`;
+            marker.style.height=`${Math.max(12,rect.bottom-rect.top+(height-initial.height)*anchorHeight)}px`;
+          };
+          const finish = () => {
+            handle.removeEventListener('pointermove', move);
+            handle.removeEventListener('pointerup', finish);
+            handle.removeEventListener('pointercancel', finish);
+            saveAnnotations(); renderChangeMarkers();
+          };
+          handle.addEventListener('pointermove', move);
+          handle.addEventListener('pointerup', finish);
+          handle.addEventListener('pointercancel', finish);
+        });
+        marker.appendChild(handle);
+      });
+    }
+
+    function addNoteButton(marker, label, noteKey) {
+      const doc = marker.ownerDocument;
+      const note = annotations.notes?.[noteKey] || '';
+      const initialColor = annotations.colors?.[noteKey] || 'blue';
+      const theme = markerTheme(noteKey);
+      const button = doc.createElement('button');
+      button.type = 'button';
+      button.textContent = note ? '说明·' : '说明';
+      button.title = note || '查看或编辑改动说明';
+      button.setAttribute('aria-label', note ? '查看或编辑改动说明' : '添加改动说明');
+      Object.assign(button.style, {height:'18px',marginLeft:'6px',padding:'0 6px',border:'1px solid #ffffff88',borderRadius:'9px',background:note?'#fff':'#ffffff22',color:note?theme.button:'#fff',font:'700 10px/1 inherit',cursor:'pointer',pointerEvents:'auto'});
+      button.addEventListener('pointerdown', event => event.stopPropagation());
+      button.addEventListener('click', event => {
+        event.preventDefault(); event.stopPropagation();
+        doc.querySelector('.comparison-note-editor')?.remove();
+        const panel = doc.createElement('div');
+        panel.className = 'comparison-note-editor';
+        panel.setAttribute('role', 'dialog');
+        panel.setAttribute('aria-label', '改动说明');
+        Object.assign(panel.style, {boxSizing:'border-box',position:'fixed',zIndex:'2147483647',width:'min(520px, calc(100vw - 16px))',padding:'12px',border:'1px solid #b8d3ee',borderRadius:'8px',background:'#fff',boxShadow:'0 8px 24px #20354b33',color:'#334f68',pointerEvents:'auto'});
+        const heading = doc.createElement('b');
+        heading.textContent = '改动说明';
+        Object.assign(heading.style, {display:'block',marginBottom:'7px',fontSize:'12px'});
+        const textarea = doc.createElement('textarea');
+        textarea.value = note;
+        textarea.maxLength = 2000;
+        textarea.placeholder = '记录这项改动的原因、口径或需要注意的事项…';
+        Object.assign(textarea.style, {boxSizing:'border-box',display:'block',width:'100%',minHeight:'68px',height:'68px',padding:'7px 8px',resize:'none',overflowY:'hidden',border:'1px solid #d8e3ec',borderRadius:'6px',outlineColor:'#2f80ed',color:'#334f68',font:'12px/1.5 inherit'});
+        let selectedColor = initialColor;
+        const colorRow = doc.createElement('div');
+        Object.assign(colorRow.style, {display:'flex',alignItems:'center',gap:'7px',marginTop:'8px',fontSize:'11px'});
+        const colorTitle = doc.createElement('span'); colorTitle.textContent = '标记颜色';
+        Object.assign(colorTitle.style, {marginRight:'2px',color:'#657b90',fontWeight:'700'});
+        const colorButtons = ['blue','red'].map(color => {
+          const choice = doc.createElement('button');
+          choice.type = 'button'; choice.textContent = color === 'blue' ? '蓝色' : '红色'; choice.dataset.color = color;
+          const paint = () => Object.assign(choice.style, {height:'24px',padding:'0 9px',border:`1px solid ${color === 'red' ? '#e5484d' : '#2f80ed'}`,borderRadius:'12px',background:selectedColor===color?(color==='red'?'#e5484d':'#2f80ed'):'#fff',color:selectedColor===color?'#fff':(color==='red'?'#c9343a':'#246dcc'),font:'700 11px/1 inherit',cursor:'pointer'});
+          choice.addEventListener('click', colorEvent => { colorEvent.preventDefault(); colorEvent.stopPropagation(); selectedColor = color; colorButtons.forEach(item => item.paint()); });
+          choice.paint = paint; paint(); return choice;
+        });
+        colorRow.append(colorTitle, ...colorButtons);
+        const actions = doc.createElement('div');
+        Object.assign(actions.style, {display:'flex',justifyContent:'flex-end',gap:'6px',marginTop:'8px'});
+        const cancel = doc.createElement('button');
+        cancel.type = 'button'; cancel.textContent = '取消';
+        const save = doc.createElement('button');
+        save.type = 'button'; save.textContent = '保存说明';
+        [cancel, save].forEach(action => Object.assign(action.style, {height:'25px',padding:'0 9px',border:'1px solid #cad9e5',borderRadius:'5px',background:'#fff',color:'#526b81',font:'700 11px/1 inherit',cursor:'pointer'}));
+        Object.assign(save.style, {borderColor:'#2f80ed',background:'#2f80ed',color:'#fff'});
+        cancel.addEventListener('click', closeEvent => { closeEvent.preventDefault(); closeEvent.stopPropagation(); panel.remove(); });
+        save.addEventListener('click', saveEvent => {
+          saveEvent.preventDefault(); saveEvent.stopPropagation();
+          const value = textarea.value.trim();
+          annotations.notes ||= {};
+          annotations.colors ||= {};
+          if (value) annotations.notes[noteKey] = value;
+          else delete annotations.notes[noteKey];
+          if (selectedColor === 'blue') delete annotations.colors[noteKey];
+          else annotations.colors[noteKey] = selectedColor;
+          panel.remove(); saveAnnotations(); renderChangeMarkers();
+        });
+        actions.append(cancel, save);
+        panel.append(heading, textarea, colorRow, actions);
+        (doc.getElementById('comparison-change-overlay') || doc.body).appendChild(panel);
+        const positionPanel = () => {
+          const labelRect = label.getBoundingClientRect();
+          const panelRect = panel.getBoundingClientRect();
+          panel.style.top = `${Math.max(8, labelRect.top - panelRect.height - 8)}px`;
+          panel.style.left = `${Math.max(8, Math.min(labelRect.left, doc.defaultView.innerWidth - panelRect.width - 8))}px`;
+        };
+        const growTextarea = () => {
+          textarea.style.height = 'auto';
+          textarea.style.height = `${textarea.scrollHeight + 2}px`;
+          positionPanel();
+        };
+        textarea.addEventListener('input', growTextarea);
+        growTextarea();
+        textarea.focus();
+      });
+      label.appendChild(button);
+    }
+
+    function annotationSelector(element) {
+      const parts = [];
+      while (element && element !== element.ownerDocument.body) {
+        if (element.id) { parts.unshift('#' + CSS.escape(element.id)); break; }
+        const siblings = [...element.parentElement.children].filter(node => node.tagName === element.tagName);
+        parts.unshift(element.tagName.toLowerCase() + ':nth-of-type(' + (siblings.indexOf(element) + 1) + ')');
+        element = element.parentElement;
+      }
+      return parts.join(' > ') || 'body';
+    }
+
+    function activeTabValue(group) {
+      const active = group?.querySelector('button.active, button[aria-selected="true"], button[aria-pressed="true"]');
+      return active?.textContent.trim().replace(/\s+/g, ' ') || '';
+    }
+
+    function tabViewForTarget(target) {
+      if (!target) return null;
+      const doc = target.ownerDocument;
+      const groups = [...doc.querySelectorAll('.compact-segment, .tabs, .ha-rank-tabs, .ha-honor-tabs, .ha-honor-query-tabs, .human-admin-tabs')]
+        .filter(group => activeTabValue(group));
+      const ancestors = node => { const result=[]; for(let current=node;current;current=current.parentElement) result.push(current); return result; };
+      const targetAncestors = ancestors(target);
+      let best = null;
+      groups.forEach(group => {
+        const groupAncestors = ancestors(group);
+        const common = targetAncestors.find(node => groupAncestors.includes(node));
+        if (!common) return;
+        const distance = targetAncestors.indexOf(common) + groupAncestors.indexOf(common);
+        if (distance > 8 || (best && best.distance <= distance)) return;
+        const aria = group.getAttribute('aria-label');
+        const selector = group.id ? `#${CSS.escape(group.id)}` : aria ? `[aria-label=${JSON.stringify(aria)}]` : annotationSelector(group);
+        best = {selector, value:activeTabValue(group), distance};
+      });
+      return best ? {selector:best.selector, value:best.value} : null;
+    }
+
+    function boxViewMatches(doc, box) {
+      if (!box.view?.selector || !box.view?.value) return true;
+      return activeTabValue(queryPatchElement(doc, box.view.selector)) === box.view.value;
+    }
+
+    function cancelBoxSelection() {
+      if (selectionKeyHandler) selectionLayer?.ownerDocument.removeEventListener('keydown', selectionKeyHandler);
+      selectionKeyHandler = null;
+      selectionLayer?.remove(); selectionLayer = null;
+      boxToggle.classList.remove('active');
+      boxToggle.setAttribute('aria-pressed', 'false');
+      boxToggle.textContent = '框选改动';
+    }
+
+    function startBoxSelection() {
+      const doc = currentFrame.contentDocument;
+      const scope = activeChangeScope(doc);
+      const layer = doc.createElement('div');
+      layer.id = 'comparison-box-selection';
+      Object.assign(layer.style, {position:'fixed',inset:'0',zIndex:'2147483647',cursor:'crosshair',touchAction:'none'});
+      const ghost = doc.createElement('div');
+      Object.assign(ghost.style, {position:'fixed',border:'2px dashed #2f80ed',background:'#2f80ed18',pointerEvents:'none',display:'none'});
+      layer.appendChild(ghost);
+      doc.body.appendChild(layer); selectionLayer = layer;
+      boxToggle.classList.add('active');boxToggle.setAttribute('aria-pressed','true');boxToggle.textContent='取消框选';
+      annotationStatus.textContent='在当前开发版拖动框选；Esc 取消';
+      let start;
+      const underlying = event => {
+        layer.style.pointerEvents='none';
+        const overlay=doc.getElementById('comparison-change-overlay');
+        if(overlay)overlay.hidden=true;
+        const target=doc.elementFromPoint(event.clientX,event.clientY);
+        if(overlay)overlay.hidden=false;
+        layer.style.pointerEvents='auto';
+        return target;
+      };
+      const coordinates = event => {
+        const bounds=scope?.getBoundingClientRect() || {left:0,top:0,right:doc.defaultView.innerWidth,bottom:doc.defaultView.innerHeight};
+        return {x:Math.max(bounds.left,Math.min(event.clientX,bounds.right)),y:Math.max(bounds.top,Math.min(event.clientY,bounds.bottom))};
+      };
+      layer.addEventListener('pointerdown',event=>{
+        const target=underlying(event);
+        if (scope && !scope.contains(target)) return;
+        start={...coordinates(event),target};layer.setPointerCapture(event.pointerId);
+        event.preventDefault(); event.stopPropagation();
+      });
+      layer.addEventListener('pointermove',event=>{
+        if(!start)return;
+        const end=coordinates(event);
+        Object.assign(ghost.style,{display:'block',left:Math.min(start.x,end.x)+'px',top:Math.min(start.y,end.y)+'px',width:Math.abs(start.x-end.x)+'px',height:Math.abs(start.y-end.y)+'px'});
+      });
+      layer.addEventListener('pointerup',event=>{
+        if(!start)return;
+        const end=coordinates(event),target=underlying(event);
+        const left=Math.min(start.x,end.x),top=Math.min(start.y,end.y),width=Math.abs(start.x-end.x),height=Math.abs(start.y-end.y);
+        let anchor=start.target;
+        while(anchor?.parentElement && (!anchor.contains(target) || anchor.getBoundingClientRect().left>left || anchor.getBoundingClientRect().top>top || anchor.getBoundingClientRect().right<left+width || anchor.getBoundingClientRect().bottom<top+height)) anchor=anchor.parentElement;
+        cancelBoxSelection();
+        if(width<8 || height<8 || !anchor || (scope && !scope.contains(anchor))) {annotationStatus.textContent='未添加：请拖出一个有效区域';return;}
+        const selectionRect={left,top,right:left+width,bottom:top+height};
+        const scrollContainer=boxScrollContainer(anchor,selectionRect);
+        const storageAnchor=scrollContainer||anchor;
+        const bounds=storageAnchor.getBoundingClientRect(), aw=Math.max(storageAnchor.scrollWidth,bounds.width), ah=Math.max(storageAnchor.scrollHeight,bounds.height);
+        annotations.boxes.push({id:'box-'+Date.now()+'-'+Math.random().toString(36).slice(2),selector:annotationSelector(storageAnchor),cockpit:markerCockpit(),context:markerContext(scope),view:tabViewForTarget(storageAnchor),x:(left-bounds.left+storageAnchor.scrollLeft)/aw,y:(top-bounds.top+storageAnchor.scrollTop)/ah,width:width/aw,height:height/ah});
+        saveAnnotations();renderChangeMarkers();
+      });
+      layer.addEventListener('pointercancel',cancelBoxSelection);
+      selectionKeyHandler=event=>{if(event.key==='Escape')cancelBoxSelection();};
+      doc.addEventListener('keydown',selectionKeyHandler);
+    }
+    boxToggle.addEventListener('click',async()=>{
+      if(selectionLayer){cancelBoxSelection();return;}
+      await annotationsReady;
+      if(!showChanges)await setChangesVisible(true);
+      startBoxSelection();
+    });
+    document.addEventListener('keydown',event=>{if(event.key==='Escape')cancelBoxSelection();});
+    function queryPatchElement(doc, selector) {
+      try { return doc?.querySelector(selector) || null; } catch { return null; }
+    }
+
+    function visibleElement(element) {
+      if (!element || element.closest('[hidden], [aria-hidden="true"]')) return false;
+      const style = element.ownerDocument.defaultView.getComputedStyle(element);
+      return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0;
+    }
+
+    function activeChangeScope(doc) {
+      const dialogs = [...doc.querySelectorAll('.drawer.open, dialog[open], [role="dialog"][aria-modal="true"], .modal.open, .modal.show')]
+        .filter(visibleElement);
+      // Use the highest visible dialog; for equal stacking levels the later one wins.
+      return dialogs.reduce((top, element) => !top ||
+        (parseInt(doc.defaultView.getComputedStyle(element).zIndex) || 0) >=
+        (parseInt(doc.defaultView.getComputedStyle(top).zIndex) || 0) ? element : top, null);
+    }
+
+    function boxScrollContainer(target, rawRect) {
+      const win = target.ownerDocument.defaultView;
+      const centerX = (rawRect.left + rawRect.right) / 2;
+      const centerY = (rawRect.top + rawRect.bottom) / 2;
+      return [...target.querySelectorAll('*')].filter(element => {
+        const style = win.getComputedStyle(element);
+        const scrollsX = /auto|scroll/.test(style.overflowX) && element.scrollWidth > element.clientWidth;
+        const scrollsY = /auto|scroll/.test(style.overflowY) && element.scrollHeight > element.clientHeight;
+        if (!scrollsX && !scrollsY) return false;
+        const bounds = element.getBoundingClientRect();
+        return centerX >= bounds.left && centerX <= bounds.right && centerY >= bounds.top && centerY <= bounds.bottom;
+      }).sort((first, second) => {
+        const firstBounds = first.getBoundingClientRect();
+        const secondBounds = second.getBoundingClientRect();
+        return firstBounds.width * firstBounds.height - secondBounds.width * secondBounds.height;
+      })[0] || null;
+    }
+
+    function visibleChangeRect(target, scope, customRect, scrollContainer) {
+      if (!visibleElement(target) || (scope && !scope.contains(target))) return null;
+      if (!scope && target.closest('.drawer, dialog, [role="dialog"], .modal')) return null;
+      const rect = customRect || target.getBoundingClientRect();
+      const win = target.ownerDocument.defaultView;
+      let left = Math.max(2, rect.left - 2), top = Math.max(2, rect.top - 2);
+      let right = Math.min(win.innerWidth - 2, rect.right + 2), bottom = Math.min(win.innerHeight - 2, rect.bottom + 2);
+      let clipTop = 2, clipRight = win.innerWidth - 2;
+      // Clip to the drawer and scroll containers so hidden table cells stay hidden.
+      for (let parent = scrollContainer || (customRect ? target : target.parentElement); parent; parent = parent.parentElement) {
+        const style = win.getComputedStyle(parent);
+        const bounds = parent.getBoundingClientRect();
+        if (parent === scope || /auto|scroll|hidden|clip/.test(style.overflowX)) {
+          left = Math.max(left, bounds.left + parent.clientLeft);
+          clipRight = Math.min(clipRight, bounds.left + parent.clientLeft + parent.clientWidth);
+          right = Math.min(right, clipRight);
+        }
+        if (parent === scope || /auto|scroll|hidden|clip/.test(style.overflowY)) {
+          clipTop = Math.max(clipTop, bounds.top + parent.clientTop);
+          top = Math.max(top, clipTop);
+          bottom = Math.min(bottom, bounds.top + parent.clientTop + parent.clientHeight);
+        }
+      }
+      if (scope === target) {
+        clipTop = Math.max(clipTop, rect.top);
+        top = Math.max(top, rect.top);
+      }
+      return rect.width > 0 && rect.height > 0 && right > left && bottom > top
+        ? { left, top, right, bottom, clipTop, clipRight } : null;
+    }
+
+    function syncChangeToggleButtons() {
+      changesToggle.classList.toggle('active', showChanges);
+      changesToggle.setAttribute('aria-pressed', String(showChanges));
+      changesToggle.textContent = showChanges ? '隐藏手动标记' : '显示手动标记';
+      const inlineToggle = currentFrame.contentDocument?.getElementById('comparison-inline-toggle');
+      if (!inlineToggle) return;
+      inlineToggle.classList.toggle('primary', showChanges);
+      inlineToggle.setAttribute('aria-pressed', String(showChanges));
+      inlineToggle.textContent = showChanges ? '✎ 隐藏手动标记' : '✎ 显示手动标记';
+    }
+
+    function installInlineChangeToggle(doc) {
+      if (!doc?.body) return;
+      let inlineToggle = doc.getElementById('comparison-inline-toggle');
+      if (!inlineToggle) {
+        const compareLink = doc.getElementById('version-compare-link');
+        if (!compareLink) return;
+        inlineToggle = doc.createElement('button');
+        inlineToggle.id = 'comparison-inline-toggle';
+        inlineToggle.className = 'version-link';
+        inlineToggle.type = 'button';
+        inlineToggle.title = '显示或隐藏当前开发版中手动框选的标记';
+        inlineToggle.style.cursor = 'pointer';
+        inlineToggle.style.fontFamily = 'inherit';
+        inlineToggle.addEventListener('click', () => setChangesVisible(!showChanges));
+        compareLink.insertAdjacentElement('afterend', inlineToggle);
+      }
+      syncChangeToggleButtons();
+    }
+
+    function scheduleChangeRefresh(event) {
+      // Keep annotation controls mounted while their hover transitions run.
+      if (event?.target?.closest?.('#comparison-change-overlay, #comparison-box-selection')) return;
+      if (currentFrame.contentDocument?.querySelector('.comparison-note-editor')) return;
+      cancelAnimationFrame(changeRefreshTimer);
+      changeRefreshTimer = requestAnimationFrame(renderChangeMarkers);
+    }
+
+    function installChangeTracking(doc) {
+      changeObserver?.disconnect();
+      changeObserver = new MutationObserver(records => {
+        const externalChange = records.some(record => !record.target.closest?.('#comparison-change-overlay, #comparison-box-selection'));
+        if (externalChange) renderChangeMarkers();
+      });
+      changeObserver.observe(doc.body, { childList:true, subtree:true, attributes:true, attributeFilter:['class','style','open','hidden','aria-hidden','aria-modal'] });
+      trackedFrameWindow?.removeEventListener('scroll', scheduleChangeRefresh, true);
+      trackedFrameWindow?.removeEventListener('resize', scheduleChangeRefresh);
+      trackedFrameWindow?.removeEventListener('transitionrun', scheduleChangeRefresh, true);
+      trackedFrameWindow?.removeEventListener('transitionend', scheduleChangeRefresh, true);
+      trackedFrameWindow = currentFrame.contentWindow;
+      trackedFrameWindow.addEventListener('scroll', scheduleChangeRefresh, true);
+      trackedFrameWindow.addEventListener('resize', scheduleChangeRefresh);
+      trackedFrameWindow.addEventListener('transitionrun', scheduleChangeRefresh, true);
+      trackedFrameWindow.addEventListener('transitionend', scheduleChangeRefresh, true);
+    }
+
+    function renderChangeMarkers() {
+      if (!showChanges) return;
+      const doc = currentFrame.contentDocument;
+      if (!doc?.body) return;
+      if (doc.querySelector('.comparison-note-editor')) return;
+      let overlay = doc.getElementById('comparison-change-overlay');
+      if (!overlay) {
+        overlay = doc.createElement('div');
+        overlay.id = 'comparison-change-overlay';
+        Object.assign(overlay.style, {
+          position:'fixed', inset:'0', zIndex:'2147483646', pointerEvents:'none', overflow:'visible'
+        });
+        doc.body.appendChild(overlay);
+        installChangeTracking(doc);
+      }
+      overlay.replaceChildren();
+      const scope = activeChangeScope(doc);
+      const dialogScopeMessage = '当前正在查看明细弹窗，关闭后可调整页面上的改动框';
+      if (scope) annotationStatus.textContent = dialogScopeMessage;
+      else if (annotationStatus.textContent === dialogScopeMessage) annotationStatus.textContent = '';
+      const items = [];
+      annotations.boxes.filter(box => box.cockpit === markerCockpit() && box.context === markerContext(scope) && boxViewMatches(doc, box)).forEach(box => {
+        const target = queryPatchElement(doc, box.selector);
+        if (!target) return;
+        const bounds = target.getBoundingClientRect(), width = Math.max(target.scrollWidth, bounds.width), height = Math.max(target.scrollHeight, bounds.height);
+        const rawRect = {left:bounds.left + box.x * width,top:bounds.top + box.y * height};
+        rawRect.right = rawRect.left + box.width * width;
+        rawRect.bottom = rawRect.top + box.height * height;
+        const scrollContainer = boxScrollContainer(target, rawRect);
+        if (scrollContainer && !Number.isFinite(box.nestedScrollLeft)) {
+          const scrollBounds = scrollContainer.getBoundingClientRect();
+          const looksAnchoredToRightEdge = rawRect.right >= scrollBounds.right - 3;
+          box.nestedScrollLeft = looksAnchoredToRightEdge ? scrollContainer.scrollWidth - scrollContainer.clientWidth : scrollContainer.scrollLeft;
+        }
+        if (scrollContainer && !Number.isFinite(box.nestedScrollTop)) box.nestedScrollTop = scrollContainer.scrollTop;
+        const nestedScrollLeft = scrollContainer ? scrollContainer.scrollLeft - box.nestedScrollLeft : 0;
+        const nestedScrollTop = scrollContainer ? scrollContainer.scrollTop - box.nestedScrollTop : 0;
+        const left = rawRect.left - target.scrollLeft - nestedScrollLeft;
+        const top = rawRect.top - target.scrollTop - nestedScrollTop;
+        items.push({target, box, scrollContainer, customRect:{left,top,right:left+box.width*width,bottom:top+box.height*height,width:box.width*width,height:box.height*height}});
+      });
+      items.forEach(({target, box, customRect, scrollContainer}) => {
+        const rect = visibleChangeRect(target, scope, customRect, scrollContainer);
+        if (!rect) return;
+        const { left, top, right, bottom, clipTop, clipRight } = rect;
+        const noteKey = annotationNoteKey(box);
+        const theme = markerTheme(noteKey);
+        const marker = doc.createElement('div');
+        marker.className = 'comparison-change-marker';
+        Object.assign(marker.style, {
+          position:'fixed', left:`${left}px`, top:`${top}px`,
+          width:`${right - left}px`, height:`${bottom - top}px`, border:`2px solid ${theme.solid}`,
+          borderRadius:'9px', boxShadow:`0 0 0 2px ${theme.shadow}`, pointerEvents:'none'
+        });
+        const label = doc.createElement('span');
+        const hasRoomAbove = top - clipTop >= 27;
+        const hasRoomBelow = doc.defaultView.innerHeight - bottom >= 27;
+        Object.assign(label.style, {
+          position:'absolute', right:'3px', top:hasRoomAbove ? '-23px' : hasRoomBelow ? 'calc(100% + 4px)' : '3px', height:'23px', display:'inline-flex',
+          alignItems:'center', padding:'0 5px', borderRadius:'12px', background:theme.solid, opacity:'0.82',
+          boxShadow:'0 2px 6px rgba(31,101,190,.24)', color:'#fff', font:'700 11px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif',
+          whiteSpace:'nowrap', pointerEvents:'auto', transition:'opacity .15s ease'
+        });
+        label.addEventListener('mouseenter', () => { label.style.opacity = '1'; });
+        label.addEventListener('mouseleave', () => { label.style.opacity = '0.82'; });
+        const editButton = doc.createElement('button');
+        editButton.type = 'button';
+        editButton.textContent = '✎';
+        editButton.title = selectedManualBoxId === box.id ? '已选中，可拖动控制点调整范围' : '点击选中并调整改动框范围';
+        editButton.setAttribute('aria-label', '选中并调整改动框范围');
+        Object.assign(editButton.style, {height:'18px',minWidth:'18px',padding:'0',border:'0',background:'transparent',color:'#fff',font:'700 12px/1 inherit',cursor:'pointer',pointerEvents:'auto'});
+        editButton.addEventListener('pointerdown', event => event.stopPropagation());
+        editButton.addEventListener('click', event => {
+          event.preventDefault(); event.stopPropagation();
+          selectedManualBoxId = box.id;
+          saveAnnotations();
+          renderChangeMarkers();
+        });
+        label.appendChild(editButton);
+        addNoteButton(marker, label, noteKey);
+        marker.appendChild(label);
+        addDismissButton(marker, () => {
+          annotations.boxes = annotations.boxes.filter(item => item.id !== box.id);
+          delete annotations.notes?.[noteKey];
+          delete annotations.colors?.[noteKey];
+        }, theme);
+        if (selectedManualBoxId === box.id) addResizeHandles(marker, box, target, rect, theme);
+        overlay.appendChild(marker);
+      });
+      if (scope?.getAnimations().some(animation => animation.playState === 'running')) scheduleChangeRefresh();
+    }
+
+    function removeChangeMarkers() {
+      cancelAnimationFrame(changeRefreshTimer);
+      changeObserver?.disconnect();
+      changeObserver = null;
+      trackedFrameWindow?.removeEventListener('scroll', scheduleChangeRefresh, true);
+      trackedFrameWindow?.removeEventListener('resize', scheduleChangeRefresh);
+      trackedFrameWindow?.removeEventListener('transitionrun', scheduleChangeRefresh, true);
+      trackedFrameWindow?.removeEventListener('transitionend', scheduleChangeRefresh, true);
+      trackedFrameWindow = null;
+      currentFrame.contentDocument?.getElementById('comparison-change-overlay')?.remove();
+    }
+
+    async function setChangesVisible(visible) {
+      showChanges = visible;
+      syncChangeToggleButtons();
+      if (!showChanges) {
+        cancelBoxSelection();
+        removeChangeMarkers();
+        return;
+      }
+      await annotationsReady;
+      renderChangeMarkers();
+      setTimeout(renderChangeMarkers, 300);
+    }
+
+    changesToggle.addEventListener('click', () => setChangesVisible(!showChanges));
+
+    currentFrame.addEventListener('load', () => {
+      cancelBoxSelection();
+      installInlineChangeToggle(currentFrame.contentDocument);
+      if (showChanges) setTimeout(renderChangeMarkers, 120);
+    });
+    const main = document.querySelector('main');
+    const splitter = document.getElementById('splitter');
+    const minPaneHeight = 110;
+
+    function setSplit(clientY) {
+      const bounds = main.getBoundingClientRect();
+      const splitterHeight = splitter.offsetHeight;
+      const available = bounds.height - splitterHeight;
+      const top = Math.max(minPaneHeight, Math.min(clientY - bounds.top, available - minPaneHeight));
+      const percent = top / available * 100;
+      document.documentElement.style.setProperty('--top-pane-height', `${top}px`);
+      splitter.setAttribute('aria-valuenow', String(Math.round(percent)));
+    }
+
+    splitter.addEventListener('pointerdown', event => {
+      splitter.setPointerCapture(event.pointerId);
+      splitter.classList.add('dragging');
+      document.body.classList.add('resizing');
+    });
+
+    splitter.addEventListener('pointermove', event => {
+      if (splitter.hasPointerCapture(event.pointerId)) setSplit(event.clientY);
+    });
+
+    function stopDragging(event) {
+      if (splitter.hasPointerCapture(event.pointerId)) splitter.releasePointerCapture(event.pointerId);
+      splitter.classList.remove('dragging');
+      document.body.classList.remove('resizing');
+    }
+
+    splitter.addEventListener('pointerup', stopDragging);
+    splitter.addEventListener('pointercancel', stopDragging);
+
+    splitter.addEventListener('keydown', event => {
+      if (!['ArrowUp','ArrowDown','Home','End'].includes(event.key)) return;
+      event.preventDefault();
+      const bounds = main.getBoundingClientRect();
+      const currentTop = splitter.getBoundingClientRect().top;
+      const target = event.key === 'Home' ? bounds.top + minPaneHeight
+        : event.key === 'End' ? bounds.bottom - splitter.offsetHeight - minPaneHeight
+        : currentTop + (event.key === 'ArrowUp' ? -20 : 20);
+      setSplit(target);
+    });
+
+    splitter.addEventListener('dblclick', () => {
+      const bounds = main.getBoundingClientRect();
+      setSplit(bounds.top + (bounds.height - splitter.offsetHeight) / 2);
+    });
+  </script>
+</body>
+</html>

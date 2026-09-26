@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>我的第一张 HTML 页面</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f6fb;color:#243047;font-family:system-ui,sans-serif;padding:48px 24px}main{max-width:960px;margin:auto}header{padding:36px;background:#fff;border-radius:24px;margin-bottom:24px}h1{font-size:40px;line-height:1.2;margin:12px 0}p{line-height:1.8;color:#64748b}.tag{color:#5b53ce;font-weight:600}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}.card{background:#fff;padding:28px;border-radius:20px}.card h2{font-size:20px}.number{font-size:36px;font-weight:700;color:#5b53ce}button{background:#5b53ce;color:#fff;border:0;border-radius:12px;padding:14px 24px;font-size:16px;cursor:pointer}footer{margin-top:28px;color:#64748b}@media(max-width:640px){.cards{grid-template-columns:1fr}h1{font-size:30px}}
+</style>
+</head>
+<body><main id="main">
+<header id="hero"><span class="tag">HTML 可视化编辑器 · 示例</span><h1 id="title">让想法变成看得见的页面</h1><p id="intro">切换到编辑模式，双击这段文字，试着写下自己的介绍。你也可以拖动组件、更换颜色，再把页面保存下来。</p><button id="action" type="button">开始我的创作</button></header>
+<section class="cards" id="cards">
+<article class="card" id="card-one"><h2>我的灵感</h2><div class="number">12</div><p>示例数据：记录每一个有趣的想法。</p></article>
+<article class="card" id="card-two"><h2>正在创作</h2><div class="number">3</div><p>示例数据：把文字、图片与布局组合起来。</p></article>
+<article class="card" id="card-three"><h2>已经完成</h2><div class="number">8</div><p>示例数据：导出项目，分享给朋友。</p></article>
+</section><footer id="footer">这是练习页面，所有内容都可以自由修改。</footer>
+</main></body></html>

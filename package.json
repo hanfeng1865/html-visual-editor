@@ -1,9 +1,9 @@
 {
   "name": "html-visual-editor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "本地 HTML 可视化编辑器：拖动、文字样式、源码保存、历史对比与项目导出",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "engines": {
     "node": ">=22"

@@ -1,21 +1,61 @@
-MIT License
+HTML 可视化编辑器非商业源码许可协议（版本 1.0）
 
-Copyright (c) 2026 hanfeng1865
+Copyright (c) 2026 hanfeng1865. All rights reserved.
+生效范围：本仓库 v1.1.0 及以后采用本协议发布的版本。
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. 授权范围
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+在遵守本协议的前提下，著作权人允许任何人仅为非商业目的使用、复制、
+学习、修改及免费再分发本软件的源码、文档和示例（统称“本软件”）。
+个人学习、个人兴趣项目和不涉及商业利益的免费交流属于允许的用途。
+除本协议明确授予的权利外，其他权利均由著作权人保留。
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. 禁止商业使用
+
+本软件及其修改版、衍生版本不得用于以直接或间接获取商业利益、报酬或
+营利为目的的活动。禁止的用途包括但不限于：
+
+（1）出售、出租、付费授权本软件，或提供收费下载、订阅、托管服务；
+（2）将本软件或其代码整合进商业产品、商业平台或收费服务；
+（3）使用本软件开展商业客户项目、收费设计、咨询或其他有偿服务；
+（4）在企业的商业经营、内部业务或生产活动中使用本软件；
+（5）通过广告、付费课程、付费培训等方式从本软件的使用或分发中获利；
+（6）使用本软件制作、编辑用于销售、商业交付或商业运营的页面或项目。
+
+是否收费不是唯一判断标准；免费提供但用于促销、获客或商业经营的用途
+同样属于商业使用。修改、重新命名或免费再分发本软件不免除这些限制。
+本协议不授予任何商业使用权。
+
+3. 修改和再分发
+
+再分发本软件或其修改版必须免费，保留本协议全文、原始版权声明及
+非商业使用限制，并清楚标明已作出的修改。不得对修改版或衍生版本
+授予商业使用权，不得删除或规避本协议的限制。
+
+4. 用户内容和第三方材料
+
+本协议不转移用户自行导入、创建或导出的页面、图片、文字和其他独立
+内容的所有权，也不自动将这些独立内容置于本协议下。但使用本软件
+制作或编辑商业用途内容的行为仍受第 2 条限制。
+第三方依赖及其他明确标注独立许可证的材料继续适用各自的许可证；
+本协议不改变第三方权利，也不限制独立于本软件获得的第三方材料。
+
+5. 历史版本
+
+本协议不追溯撤销或修改此前已按 MIT 许可证发布的版本及其已授予的权利。
+v1.0.0、v1.0.1 和历史提交中明确采用 MIT 许可证的版本仍按其原许可证处理。
+本协议仅适用于明确采用本协议发布的版本及其中依据本协议提供的修改。
+
+6. 终止
+
+违反本协议时，本协议授予的许可自动终止。终止后应停止使用、复制、
+修改和再分发本软件；依法享有的独立权利不受影响。
+
+7. 免责声明
+
+本软件按“现状”提供，不附带适销性、特定用途适用性、不侵权等任何明示
+或默示保证。在法律允许的最大范围内，著作权人不对使用或无法使用本软件
+导致的任何索赔、损害或其他责任承担责任。
+
+本协议是自定义的非商业源码许可，不是 MIT 许可证，也不是 OSI 认可的
+开源许可证。对本协议未明确授权的用途，应联系著作权人。

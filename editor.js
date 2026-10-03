@@ -1958,6 +1958,47 @@ document.getElementById('export-html-button').addEventListener('click', async ()
   exportMenu.hidden = true;
   try { await exportHtml(); } catch (error) { showToast(`导出失败：${error.message}`); }
 });
+const shareDialog=document.getElementById('share-dialog'),shareLink=document.getElementById('share-link'),shareStatus=document.getElementById('share-status');
+const shareCopy=document.getElementById('share-copy'),shareStop=document.getElementById('share-stop');
+let shareProject=null,shareBusy=false,shareCopyTimer=null;
+function resetShareCopy(){clearTimeout(shareCopyTimer);shareCopy.textContent='复制链接';delete shareCopy.dataset.copied;}
+document.getElementById('share-close').onclick=()=>shareDialog.close();
+document.getElementById('share-lan-button').onclick=async()=>{
+  exportMenu.hidden=true;if(shareBusy)return;
+  shareBusy=true;const button=document.getElementById('share-lan-button');button.disabled=true;
+  try {
+    commitCardForm();if(!await saveToSource())return;
+    resetShareCopy();delete shareStatus.dataset.state;
+    shareProject=projectEndpoint('/api/lan-share');
+    shareLink.replaceChildren();shareLink.hidden=true;shareCopy.disabled=true;shareStop.disabled=true;
+    shareStatus.textContent='正在生成局域网分享链接…';shareDialog.showModal();
+    let html;
+    if(projectId==='builtin') {
+      const response=await fetch('../prototype.html');if(!response.ok)throw new Error('无法读取分享页面');
+      html=await createStandaloneHtml({source:await response.text(),patches:state.patches,fetchImpl:path=>fetch(new URL(path==='compare-versions.html'?path:`../${path}`,location.href))});
+    }
+    const response=await fetch(shareProject,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'create',...(html?{html}:{})})});
+    const result=await response.json();if(!response.ok)throw new Error(result.error||'分享失败');
+    for(const url of result.urls){const option=document.createElement('option');option.value=url;option.textContent=url;shareLink.append(option);}
+    shareLink.hidden=false;shareCopy.disabled=false;shareStop.disabled=false;
+    shareStatus.textContent=result.urls.length>1?'分享已开启。检测到多个网络地址；同事无法打开时，可换一个地址。':'分享已开启，复制链接发给同事即可。';
+  }catch(error){if(!shareDialog.open)shareDialog.showModal();shareStatus.textContent='分享失败：'+error.message;}
+  finally{shareBusy=false;button.disabled=false;}
+};
+shareCopy.onclick=async()=>{
+  resetShareCopy();delete shareStatus.dataset.state;
+  try{
+    await navigator.clipboard.writeText(shareLink.value);
+    shareCopy.textContent='✓ 复制成功';shareCopy.dataset.copied='true';
+    shareStatus.textContent='✓ 复制成功！链接已复制，发给同一 Wi-Fi 的同事即可。';shareStatus.dataset.state='success';
+    shareCopyTimer=setTimeout(resetShareCopy,2500);
+  }catch{shareStatus.textContent='复制失败，请手动复制链接：'+shareLink.value;shareStatus.dataset.state='error';}
+};
+shareStop.onclick=async()=>{
+  resetShareCopy();delete shareStatus.dataset.state;shareStop.disabled=true;
+  try{const response=await fetch(shareProject,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'stop'})});const result=await response.json();if(!response.ok)throw new Error(result.error||'停止失败');shareCopy.disabled=true;shareLink.hidden=true;shareStatus.textContent='已停止分享，原链接已失效。';}
+  catch(error){shareStatus.textContent=error.message;shareStop.disabled=false;}
+};
 document.getElementById('import-button').addEventListener('click', () => document.getElementById('import-file').click());
 document.getElementById('import-file').addEventListener('change', async event => {
   const file = event.target.files[0];

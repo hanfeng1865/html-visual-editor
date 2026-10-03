@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>HTML 可视化编辑器</title>
-  <link rel="stylesheet" href="editor.css?v=11" />
+  <link rel="stylesheet" href="editor.css?v=13" />
 </head>
 <body>
   <div class="editor-shell">
@@ -36,6 +36,7 @@
         <button id="export-menu-button" type="button">导出 ▾</button>
         <div class="export-menu" id="export-menu" hidden>
           <button id="export-json-button" type="button" hidden>导出调整 JSON</button>
+          <button id="share-lan-button" type="button">局域网分享</button>
           <button id="export-html-button" type="button">导出可运行 HTML</button>
           <button id="import-button" type="button" hidden>导入调整 JSON</button>
           <button id="reset-button" class="danger" type="button">清空全部调整</button>
@@ -347,6 +348,13 @@
       <p class="field-hint">预览使用备份的源码。恢复前会列出受影响的 HTML、CSS、JS 文件，确认后才写入。</p>
     </div></div>
   </dialog>
+  <dialog id="share-dialog" aria-labelledby="share-title">
+    <div class="project-dialog-head"><div><h2 id="share-title">局域网分享</h2><p>把链接发给同一 Wi-Fi 或局域网的同事，即可浏览页面。</p></div><button id="share-close" type="button" aria-label="关闭分享窗口">×</button></div>
+    <label for="share-link">分享链接</label><select id="share-link" aria-label="选择局域网分享地址" hidden></select>
+    <p id="share-status" role="status">正在保存并生成分享链接…</p>
+    <p class="project-note">分享的是本次保存后的页面及本地资源。修改后重新点击“局域网分享”即可更新原链接。请保持这台电脑和编辑器服务运行；“停止分享”后链接立即失效。</p>
+    <div class="share-actions"><button id="share-stop" class="danger" type="button" disabled>停止分享</button><button id="share-copy" class="primary" type="button" disabled>复制链接</button></div>
+  </dialog>
   <dialog id="project-dialog" aria-labelledby="project-dialog-title">
     <form id="open-project-form">
       <div class="project-dialog-head"><div><h2 id="project-dialog-title">打开项目文件夹</h2><p>关联原文件夹，保留 HTML、CSS、JS 与图片的目录关系。</p></div><button id="close-project-dialog" type="button" aria-label="关闭">×</button></div>
@@ -359,6 +367,6 @@
     </form>
   </dialog>
   <div class="toast" id="toast" role="status"></div>
-  <script type="module" src="editor.js?v=25"></script>
+  <script type="module" src="editor.js?v=27"></script>
 </body>
 </html>

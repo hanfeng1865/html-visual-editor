@@ -154,7 +154,7 @@ export function zipFiles(files) {
   const directory = Buffer.concat(central), end = Buffer.alloc(22);end.writeUInt32LE(0x06054b50, 0);end.writeUInt16LE(files.length, 8);end.writeUInt16LE(files.length, 10);end.writeUInt32LE(directory.length, 12);end.writeUInt32LE(offset, 16);
   return Buffer.concat([...parts, directory, end]);
 }
-export async function exportProjectZip(manager, id, entry, currentPatches, {sourceOnly=false} = {}) {
+export async function exportProjectFiles(manager, id, entry, currentPatches, {sourceOnly=false} = {}) {
   const project = await manager.describe(id, entry), files = [];let size = 0;
   if(sourceOnly && Object.keys(currentPatches || {}).length)throw error(`${entry} 仍有未写入源码的修改，请先保存并完成 AI 待办`,409);
   async function walk(folder = '') {
@@ -184,5 +184,9 @@ export async function exportProjectZip(manager, id, entry, currentPatches, {sour
     }
   }
   await walk();
-  return zipFiles(files);
+  return files;
+}
+
+export async function exportProjectZip(...args) {
+  return zipFiles(await exportProjectFiles(...args));
 }

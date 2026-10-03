@@ -1,3 +1,4 @@
+import {createLanShareService} from './lan-share.mjs';
 import {createAIService} from './ai-service.mjs';
 import {installAIErrorMonitor} from './ai-editor.mjs';
 import { readAnnotations, writeAnnotations } from './change-annotations-store.mjs';
@@ -8,7 +9,7 @@ import { createServer } from 'node:http';
 import { extname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createWorkspaceManager, chooseProjectFolder, insideProject, projectHtml, scopeRootUrls, exportProjectZip } from './project-workspaces.mjs';
+import { createWorkspaceManager, chooseProjectFolder, insideProject, projectHtml, scopeRootUrls, exportProjectFiles, exportProjectZip } from './project-workspaces.mjs';
 import { readVisualEdits, writeVisualEdits, validateVisualEdits, listVisualHistory, readVisualHistory, restoreVisualHistory, visualHistoryAt } from './visual-edits-store.mjs';
 
 const mimeTypes = {
@@ -62,10 +63,11 @@ try {
 
 export function createDevServer({ rootDir = configuration.prototypeRoot || editorDirectory, editorDir = editorDirectory } = {}) {
   const ai=createAIService(editorDir);
+  const sharing=createLanShareService({mimeTypes});
   const projectRoot = resolve(rootDir);
   const workspaces = createWorkspaceManager(projectRoot, { registryDir: join(editorDir, '.editor-workspaces') });
 
-  return createServer(async (request, response) => {
+  const server=createServer(async (request, response) => {
     try {
       const url = new URL(request.url, 'http://127.0.0.1');
       if (url.pathname === '/' || url.pathname === '/editor' || url.pathname === '/editor/') {
@@ -137,6 +139,18 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
           if(request.method==='POST')return json(response,200,await restoreSource(project,editorDir,await readJsonBody(request,25*1024*1024)));
         }
         return json(response,405,{error:'不支持此操作'});
+      }
+      if(url.pathname==='/api/lan-share' && request.method==='POST') {
+        const project=await workspaces.describe(workspaceId,entry),body=await readJsonBody(request,25*1024*1024);
+        const key=`${project.id}:${project.entry}`;
+        if(body.action==='stop')return json(response,200,sharing.stop(key));
+        if(body.action!=='create')return json(response,400,{error:'分享操作无效'});
+        let files;
+        if(workspaceId==='builtin') {
+          if(typeof body.html!=='string' || !body.html.trim())return json(response,400,{error:'请先生成分享页面'});
+          files=[['index.html',Buffer.from(body.html)]];
+        }else files=await exportProjectFiles(workspaces,workspaceId,entry,{}, {sourceOnly:true});
+        return json(response,200,await sharing.create(key,workspaceId==='builtin'?'index.html':project.entry,files));
       }
       if (url.pathname === '/api/projects/export' && request.method === 'POST') {
         const payload = await readJsonBody(request);
@@ -238,6 +252,8 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
       json(response, error.statusCode || 500, { error: error.message || '服务器错误' });
     }
   });
+  server.on('close',()=>{void sharing.close();});
+  return server;
 }
 
 function argumentValue(name, fallback) {

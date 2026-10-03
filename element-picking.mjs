@@ -20,5 +20,10 @@ export function pickElementAtPoint(doc, x, y, {cardSelector, exact=false}={}) {
   }
   if(hit.matches('html,body'))return null;
   if(exact)return hit;
-  return hit.closest(cardSelector) || hit.closest('button,a,[role="button"]') || hit;
+  const component=hit.closest(cardSelector) || hit.closest('button,a,[role="button"]');
+  if(component)return component;
+  // Space around text and between children is canvas background. Containers
+  // remain selectable through exact (Alt) picking and the layer tree.
+  if(hit.childElementCount || hit.textContent.trim())return null;
+  return hit;
 }

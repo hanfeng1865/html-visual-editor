@@ -1,6 +1,7 @@
+import { selectionLayoutOffsets } from './selection-layout.mjs';
 import {installVersionComparison} from './version-comparison.mjs';
 import { pickElementAtPoint } from './element-picking.mjs';
-import { alignmentSnap, unionRects } from './alignment-guides.mjs';
+import { alignmentSnap, alignmentMatches, unionRects } from './alignment-guides.mjs';
 import { CARD_SELECTOR, STYLE_PROPERTIES, ICON_CHOICES, IMAGE_CHOICES, elementLabel, contentFields, textTargetsForElement } from './editor-components.mjs';
 import {
   createEditorState,
@@ -16,6 +17,7 @@ import { createVisualPatchEngine } from './visual-patch-engine.mjs';
 import { createStandaloneHtml } from './export-html.mjs';
 import { interactiveHistorySource } from './history-preview.mjs';
 import {compileSource} from './source-compiler.mjs';
+import {readSourcePatches, mergeSourcePatches} from './source-runtime.mjs';
 import { tableRowContext, blankTableRow, tableColumnContext, blankTableCell, columnInsertTarget, columnDeleteTarget } from './table-row-actions.mjs';
 import { isTextToolbarTarget, textToolbarStyles } from './text-toolbar.mjs';
 
@@ -42,6 +44,11 @@ const selectionPath = document.getElementById('selection-path');
 const inspectorFields = document.getElementById('inspector-fields');
 const selectedName = document.getElementById('selected-name');
 const saveStatus = document.getElementById('save-status');
+const canvasArea = document.querySelector('.canvas-area');
+const annotationRail = document.getElementById('annotation-rail');
+const annotationList = document.getElementById('annotation-list');
+const annotationConnectors = document.getElementById('annotation-connectors');
+const annotationCount = document.getElementById('annotation-count');
 const undoButton = document.getElementById('undo-button');
 const redoButton = document.getElementById('redo-button');
 const changesToggle = document.getElementById('editor-changes-toggle');
@@ -78,6 +85,7 @@ let trackedFrameWindow = null;
 let selectionLayer = null;
 let selectionKeyHandler = null;
 let selectedManualBoxId = null;
+let annotationLayout = [];
 
 function setHelpOpen(open, { persist = true } = {}) {
   editorMain.classList.toggle('help-open', open);
@@ -114,6 +122,7 @@ function resizeCanvas() {
   document.getElementById('canvas-dimensions').textContent = `${label} · ${width} × ${viewportHeight}`;
   document.getElementById('zoom-readout').textContent = `${Math.round(scale*100)}%`;
   requestAnimationFrame(updateResizeHandle);
+  if (showChanges) requestAnimationFrame(renderChangeMarkers);
 }
 zoomSelect.addEventListener('change',resizeCanvas);
 new ResizeObserver(() => {cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(resizeCanvas);}).observe(canvasScroll);
@@ -175,6 +184,13 @@ function renderCardForm(element) {
 document.getElementById('apply-card-content').addEventListener('click',commitCardForm);
 
 function updateSelectionControls(element) {
+  const count=selectedList().length;
+  document.getElementById('selection-layout-section').hidden=count<2;
+  for(const button of document.querySelectorAll('[data-selection-layout]'))
+    button.disabled=count<(button.dataset.selectionLayout.startsWith('distribute-')?3:2);
+  document.getElementById('selection-layout-hint').textContent=count<3
+    ? '按所选元素的整体范围对齐。选择至少 3 个元素可等间距分布。'
+    : '按所选元素的整体范围对齐；等间距保持两端元素位置，均分元素之间的空隙。';
   const chain=[];
   for(let node=element;node && node!==frameDocument().body;node=node.parentElement)chain.unshift(node);
   selectionPath.textContent=chain.map(elementLabel).join(' → ');
@@ -245,6 +261,23 @@ function updateMovementReadout() {
   document.getElementById('movement-offset').textContent=list.some(node=>{const p=translationFor(node);return p.x!==first.x||p.y!==first.y;})
     ? '偏移：不同值' : `水平 ${first.x}px · 垂直 ${first.y}px`;
 }
+function arrangeSelection(action) {
+  if(mode!=='edit')return;
+  cancelMovement();commitCardForm();
+  const elements=selectedList();
+  if(elements.length<(action.startsWith('distribute-')?3:2))return;
+  const offsets=selectionLayoutOffsets(elements.map(element=>element.getBoundingClientRect()),action);
+  const changes=elements.flatMap((element,index)=>{
+    const {x,y}=offsets[index];if(Math.abs(x)<.001 && Math.abs(y)<.001)return [];
+    const origin=translationFor(element);
+    return [{element,styles:{translate:`${origin.x+x}px ${origin.y+y}px`}}];
+  });
+  if(!changes.length){showToast('所选元素已按此方式排列');return;}
+  commitChanges(changes);refreshSelection();updateResizeHandle();
+  showToast('已调整所选元素位置，可一次撤销');
+}
+for(const button of document.querySelectorAll('[data-selection-layout]'))
+  button.addEventListener('click',()=>arrangeSelection(button.dataset.selectionLayout));
 function nudgeSelection(direction, step=1) {
   if(mode!=='edit'||!selectedElements.size)return;
   commitCardForm();
@@ -434,18 +467,17 @@ function applyAlignmentGuides(bypass) {
   Object.assign(overlay.style,{position:'fixed',inset:'0',pointerEvents:'none',zIndex:'9'});
   const f=frame.getBoundingClientRect(),c=canvasScroll.getBoundingClientRect();
   const clip={left:Math.max(f.left,c.left),right:Math.min(f.right,c.right),top:Math.max(f.top,c.top),bottom:Math.min(f.bottom,c.bottom)};
-  for(const axis of ['x','y']) {
-    const match=snap[axis];if(!match || !(axis==='x'?canX:canY))continue;
-    const [start,end]=axis==='x'?['left','right']:['top','bottom'];
-    const value=[actual[start],(actual[start]+actual[end])/2,actual[end]][match.index];
-    if(Math.abs(value-match.value)>.6)continue;
-    let x1,x2,y1,y2;
-    if(axis==='x') {x1=x2=f.left+match.value*scale;y1=f.top+(Math.min(actual.top,match.target.top)-8)*scale;y2=f.top+(Math.max(actual.bottom,match.target.bottom)+8)*scale;}
-    else {y1=y2=f.top+match.value*scale;x1=f.left+(Math.min(actual.left,match.target.left)-8)*scale;x2=f.left+(Math.max(actual.right,match.target.right)+8)*scale;}
-    if(x2<clip.left || x1>clip.right || y2<clip.top || y1>clip.bottom)continue;
-    const line=document.createElement('div');line.dataset.axis=axis;
-    Object.assign(line.style,{position:'absolute',left:`${Math.max(clip.left,x1)}px`,top:`${Math.max(clip.top,y1)}px`,width:axis==='x'?'1px':`${Math.max(0,Math.min(clip.right,x2)-Math.max(clip.left,x1))}px`,height:axis==='y'?'1px':`${Math.max(0,Math.min(clip.bottom,y2)-Math.max(clip.top,y1))}px`,background:'#e34299',boxShadow:'0 0 0 1px #ffffff80'});
+  // Extend guides to the visible canvas. Use screen-pixel tolerances at
+  // every zoom level.
+  for(const {axis,value,index} of alignmentMatches(actual,references,.6/scale)) {
+    if(!(axis==='x'?canX:canY))continue;
+    const coordinate=(axis==='x'?f.left:f.top)+value*scale;
+    if(coordinate<(axis==='x'?clip.left:clip.top) || coordinate>(axis==='x'?clip.right:clip.bottom))continue;
+    const line=document.createElement('div');line.dataset.axis=axis;line.dataset.anchor=String(index);
+    line.className='alignment-guide';
+    Object.assign(line.style,{left:`${axis==='x'?coordinate:clip.left}px`,top:`${axis==='y'?coordinate:clip.top}px`,width:axis==='x'?'1px':`${clip.right-clip.left}px`,height:axis==='y'?'1px':`${clip.bottom-clip.top}px`});
     overlay.append(line);
+
   }
   if(overlay.childElementCount)document.body.append(overlay);
 }
@@ -799,6 +831,100 @@ function addNoteButton(marker, label, noteKey) {
   label.appendChild(button);
 }
 
+function annotationCardNote(box, index, theme) {
+  const noteKey = annotationNoteKey(box);
+  const card = document.createElement('article');
+  card.className = 'annotation-card';
+  card.dataset.annotationId = box.id;
+  card.style.borderColor = theme.name === 'red' ? '#efb4b4' : '#efdcaa';
+  const number = document.createElement('span');
+  number.className = 'annotation-card-number';
+  number.textContent = String(index);
+  number.style.background = theme.solid;
+  const title = document.createElement('div');
+  title.className = 'annotation-card-title';
+  const titleText = document.createElement('span');
+  titleText.textContent = `改动 ${index}`;
+  const edit = document.createElement('button');
+  edit.type = 'button'; edit.textContent = '编辑说明';
+  title.append(titleText, edit);
+  const note = document.createElement('p');
+  note.className = 'annotation-card-note';
+  const value = annotations.notes?.[noteKey] || '';
+  note.textContent = value || '尚未填写说明';
+  if (!value) note.classList.add('annotation-card-empty');
+  const editor = document.createElement('div'); editor.hidden = true;
+  const textarea = document.createElement('textarea');
+  textarea.maxLength = 2000; textarea.value = value;
+  textarea.placeholder = '记录这项改动的原因、口径或需要注意的事项…';
+  const actions = document.createElement('div'); actions.className = 'annotation-card-actions';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消';
+  const save = document.createElement('button'); save.type = 'button'; save.textContent = '保存说明'; save.className = 'primary';
+  actions.append(cancel, save); editor.append(textarea, actions);
+  const openEditor = event => {
+    event?.preventDefault(); event?.stopPropagation();
+    editor.hidden = false; note.hidden = true; edit.hidden = true;
+    textarea.focus({preventScroll:true});
+  };
+  edit.addEventListener('pointerdown', event => event.stopPropagation());
+  edit.addEventListener('click', openEditor);
+  cancel.addEventListener('click', event => { event.stopPropagation(); editor.hidden = true; note.hidden = false; edit.hidden = false; textarea.value = annotations.notes?.[noteKey] || ''; });
+  save.addEventListener('click', event => {
+    event.stopPropagation();
+    const next = textarea.value.trim();
+    if (next) annotations.notes[noteKey] = next; else delete annotations.notes[noteKey];
+    editor.hidden = true; note.hidden = false; edit.hidden = false;
+    note.textContent = next || '尚未填写说明'; note.classList.toggle('annotation-card-empty', !next);
+    saveAnnotations(); renderChangeMarkers();
+  });
+  card.addEventListener('click', event => {
+    if (event.target.closest('button,textarea')) return;
+    annotationList.querySelectorAll('.annotation-card').forEach(item => item.classList.toggle('active', item === card));
+  });
+  card.append(number, title, note, editor);
+  return card;
+}
+
+function drawAnnotationConnectors() {
+  if (!annotationRail || annotationRail.hidden || !annotationLayout.length) { annotationConnectors.replaceChildren(); return; }
+  const area = canvasArea.getBoundingClientRect();
+  const frameBounds = frame.getBoundingClientRect();
+  const scale = frameBounds.width / Math.max(1, frame.clientWidth);
+  annotationConnectors.setAttribute('viewBox', `0 0 ${Math.max(1, area.width)} ${Math.max(1, area.height)}`);
+  annotationConnectors.replaceChildren();
+  annotationLayout.forEach(({box, rect, theme}) => {
+    const card = annotationList.querySelector(`[data-annotation-id="${CSS.escape(box.id)}"]`);
+    if (!card) return;
+    const marker = frameDocument()?.querySelector(`.editor-change-marker[data-annotation-id="${CSS.escape(box.id)}"]`);
+    const markerBounds = marker?.getBoundingClientRect();
+    const sourceRect = markerBounds && markerBounds.width > 0 ? markerBounds : rect;
+    const cardBounds = card.getBoundingClientRect();
+    const startX = frameBounds.left + sourceRect.right * scale - area.left;
+    const startY = frameBounds.top + ((sourceRect.top + sourceRect.bottom) / 2) * scale - area.top;
+    const endX = cardBounds.left - area.left;
+    const endY = cardBounds.top + cardBounds.height / 2 - area.top;
+    const bend = Math.max(28, (endX - startX) * .45);
+    const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+    path.setAttribute('d', `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`);
+    path.setAttribute('fill','none'); path.setAttribute('stroke',theme.solid); path.setAttribute('stroke-width','2.5'); path.setAttribute('stroke-linecap','round'); path.setAttribute('opacity','.78');
+    const dot = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    dot.setAttribute('cx',String(startX)); dot.setAttribute('cy',String(startY)); dot.setAttribute('r','5'); dot.setAttribute('fill',theme.solid); dot.setAttribute('stroke','#fff'); dot.setAttribute('stroke-width','2');
+    annotationConnectors.append(path, dot);
+  });
+}
+
+function renderAnnotationRail(layout) {
+  if (!annotationRail || !annotationList) return;
+  annotationLayout = layout;
+  annotationList.replaceChildren();
+  annotationCount.textContent = `${layout.length} 项`;
+  layout.forEach(({box, index, theme}) => annotationList.appendChild(annotationCardNote(box, index, theme)));
+  const open = showChanges && layout.length > 0;
+  annotationRail.hidden = layout.length === 0;
+  canvasArea.classList.toggle('annotation-open', open);
+  requestAnimationFrame(drawAnnotationConnectors);
+}
+
 function annotationSelector(element) {
   const parts = [];
   const css = element?.ownerDocument.defaultView.CSS;
@@ -943,8 +1069,7 @@ function startBoxSelection() {
 
 function scheduleChangeRefresh(event) {
   // Hover transitions inside the annotation UI must not replace active controls.
-  if (event?.target?.closest?.('#editor-change-overlay, #editor-box-selection')) return;
-  if (frameDocument()?.querySelector('.editor-change-note')) return;
+  if (!['scroll','resize'].includes(event?.type) && event?.target?.closest?.('#editor-change-overlay, #editor-box-selection')) return;
   cancelAnimationFrame(changeRefreshTimer);
   changeRefreshTimer = requestAnimationFrame(renderChangeMarkers);
 }
@@ -953,16 +1078,19 @@ function installChangeTracking() {
   if (trackedFrameWindow === frame.contentWindow) return;
   trackedFrameWindow = frame.contentWindow;
   trackedFrameWindow.addEventListener('scroll', scheduleChangeRefresh, true);
+  trackedFrameWindow.document?.addEventListener('scroll', scheduleChangeRefresh, true);
   trackedFrameWindow.addEventListener('resize', scheduleChangeRefresh);
   trackedFrameWindow.addEventListener('transitionrun', scheduleChangeRefresh, true);
   trackedFrameWindow.addEventListener('transitionend', scheduleChangeRefresh, true);
 }
 
+canvasScroll.addEventListener('scroll', scheduleChangeRefresh);
+window.addEventListener('resize', scheduleChangeRefresh);
+
 function renderChangeMarkers() {
   if (!showChanges) return;
   const doc = frameDocument();
   if (!doc?.body) return;
-  if (doc.querySelector('.editor-change-note')) return;
   let overlay = doc.getElementById('editor-change-overlay');
   if (!overlay) {
     overlay = doc.createElement('div'); overlay.id = 'editor-change-overlay';
@@ -991,34 +1119,34 @@ function renderChangeMarkers() {
     const top = rawRect.top - target.scrollTop - (scrollContainer ? scrollContainer.scrollTop - box.nestedScrollTop : 0);
     items.push({target, box, scrollContainer, customRect:{left,top,right:left+box.width*width,bottom:top+box.height*height,width:box.width*width,height:box.height*height}});
   });
+  const visibleItems = [];
   items.forEach(({target, box, customRect, scrollContainer}) => {
     const rect = visibleChangeRect(target, scope, customRect, scrollContainer);
     if (!rect) return;
+    const index = visibleItems.length + 1;
     const noteKey = annotationNoteKey(box), theme = markerTheme(noteKey);
+    visibleItems.push({target, box, rect, index, theme});
     const marker = doc.createElement('div'); marker.className = 'editor-change-marker';
+    marker.dataset.annotationId = box.id;
     Object.assign(marker.style, {position:'fixed',left:`${rect.left}px`,top:`${rect.top}px`,width:`${rect.right-rect.left}px`,height:`${rect.bottom-rect.top}px`,border:`2px solid ${theme.solid}`,borderRadius:'9px',boxShadow:`0 0 0 2px ${theme.shadow}`,pointerEvents:'none'});
-    const label = doc.createElement('span');
-    const hasRoomAbove = rect.top - rect.clipTop >= 27;
-    const hasRoomBelow = doc.defaultView.innerHeight - rect.bottom >= 27;
-    Object.assign(label.style, {position:'absolute',right:'3px',top:hasRoomAbove?'-23px':hasRoomBelow?'calc(100% + 4px)':'3px',height:'23px',display:'inline-flex',alignItems:'center',padding:'0 5px',borderRadius:'12px',background:theme.solid,opacity:'0.82',boxShadow:'0 2px 6px rgba(31,101,190,.24)',color:'#fff',font:'700 11px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif',whiteSpace:'nowrap',pointerEvents:'auto',transition:'opacity .15s ease'});
-    label.addEventListener('mouseenter', () => { label.style.opacity = '1'; });
-    label.addEventListener('mouseleave', () => { label.style.opacity = '0.82'; });
+    const badge = doc.createElement('button');
+    badge.type = 'button'; badge.textContent = String(index);
+    badge.title = '查看右侧改动说明'; badge.setAttribute('aria-label', `查看第 ${index} 项改动说明`);
+    Object.assign(badge.style, {position:'absolute',left:'50%',top:'50%',transform:'translate(-50%,-50%)',zIndex:'2',width:'28px',height:'28px',padding:'0',border:`2px solid #fff`,borderRadius:'50%',background:theme.solid,color:'#fff',boxShadow:`0 2px 7px ${theme.shadow}`,font:'700 12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif',cursor:'pointer',pointerEvents:'auto'});
+    badge.addEventListener('click', event => {
+      event.preventDefault(); event.stopPropagation();
+      const card = annotationList.querySelector(`[data-annotation-id="${CSS.escape(box.id)}"]`);
+      card?.scrollIntoView({block:'nearest'}); card?.classList.add('active');
+      setTimeout(() => card?.classList.remove('active'), 1200);
+    });
     const editButton = doc.createElement('button');
-    editButton.type = 'button';
-    editButton.textContent = '✎';
-    editButton.title = box && selectedManualBoxId === box.id ? '已选中，可拖动控制点调整范围' : '点击选中并调整改动框范围';
-    editButton.setAttribute('aria-label', '选中并调整改动框范围');
-    Object.assign(editButton.style, {height:'18px',minWidth:'18px',padding:'0',border:'0',background:'transparent',color:'#fff',font:'700 12px/1 inherit',cursor:'pointer',pointerEvents:'auto'});
+    editButton.type = 'button'; editButton.textContent = '✎'; editButton.title = '选中并调整改动框范围'; editButton.setAttribute('aria-label', '选中并调整改动框范围');
+    Object.assign(editButton.style, {position:'absolute',right:'-7px',top:'-9px',zIndex:'3',width:'18px',height:'18px',padding:'0',border:`1px solid ${theme.solid}`,borderRadius:'50%',background:'#fff',color:theme.button,font:'700 10px/1 inherit',cursor:'pointer',pointerEvents:'auto'});
     editButton.addEventListener('pointerdown', event => event.stopPropagation());
     editButton.addEventListener('click', event => {
-      event.preventDefault(); event.stopPropagation();
-      selectedManualBoxId = box.id;
-      saveAnnotations();
-      renderChangeMarkers();
+      event.preventDefault(); event.stopPropagation(); selectedManualBoxId = box.id; saveAnnotations(); renderChangeMarkers();
     });
-    label.appendChild(editButton);
-    addNoteButton(marker, label, noteKey);
-    marker.appendChild(label);
+    marker.append(badge, editButton);
     addDismissButton(marker, () => {
       annotations.boxes = annotations.boxes.filter(item => item.id !== box.id);
       delete annotations.notes?.[noteKey];
@@ -1027,11 +1155,17 @@ function renderChangeMarkers() {
     if (selectedManualBoxId === box.id) addResizeHandles(marker, box, target, rect, theme);
     overlay.appendChild(marker);
   });
+  renderAnnotationRail(visibleItems);
 }
 
 function removeChangeMarkers() {
   cancelAnimationFrame(changeRefreshTimer);
   frameDocument()?.getElementById('editor-change-overlay')?.remove();
+  annotationLayout = [];
+  annotationRail?.setAttribute('hidden','');
+  canvasArea?.classList.remove('annotation-open');
+  annotationList?.replaceChildren();
+  annotationConnectors?.replaceChildren();
 }
 
 function setChangesVisible(visible) {
@@ -1054,7 +1188,7 @@ function injectEditorStyles(doc) {
     body.ve-edit-mode .ve-drop-target { outline:3px solid #13a67b !important; outline-offset:3px !important; background-color:#ecfcf5 !important; }
     body.ve-edit-mode.ve-pointer-move .ve-selected { cursor:move !important; touch-action:none; }
     body.ve-edit-mode .ve-dragging { opacity:.45 !important; }
-    body.ve-edit-mode [contenteditable="true"] { cursor:text !important; outline:2px solid #18a57b !important; background:#effcf8 !important; }
+    body.ve-edit-mode [contenteditable="true"] { cursor:text !important; outline:2px solid #18a57b !important; background:#effcf8 !important; color:#29435d !important; }
     body.ve-preview-mode .ve-selected, body.ve-preview-mode .ve-hover { outline:0 !important; box-shadow:none !important; }
   `;
   doc.head.appendChild(style);
@@ -1141,7 +1275,8 @@ function handleFrameClick(event) {
   if(event.target.closest?.('[contenteditable="true"]'))return;
   const target = pickCanvasTarget(event);
   if (!target) {
-    if(event.target.closest?.('[data-ve-locked],[data-ve-dynamic]')){event.preventDefault();event.stopImmediatePropagation();}
+    if(event.target.closest?.('[data-ve-locked],[data-ve-dynamic],#editor-change-overlay,#editor-box-selection')){event.preventDefault();event.stopImmediatePropagation();return;}
+    commitCardForm();clearSelection();
     return;
   }
   event.preventDefault();
@@ -1341,7 +1476,7 @@ function commitElementChange(element, change) {
 
 function applyAllPatches() {
   if (!patchEngine) return;
-  patchEngine.apply(state.patches);
+  patchEngine.apply(mergeSourcePatches(readSourcePatches(frameDocument()), state.patches));
   // MutationObserver callbacks run asynchronously; a boolean guard is insufficient.
   patchObserver?.takeRecords();
   requestAnimationFrame(updateResizeHandle);
@@ -1669,7 +1804,6 @@ async function saveToSource(choices={},checkedRevision=null) {
     if(!sourceBaseline)rememberSource(current);
     if(checkedRevision && current.revision!==checkedRevision)choices={};
     const result=compileSource({base:sourceBaseline,current,patches:state.patches,choices,projectId});
-    if(result.unsupported.length){sourceStatus.textContent='以下组件无法安全写回源码，尚未写入。草稿已保留，请通过 Codex 修改这些动态组件。';for(const message of result.unsupported){const p=document.createElement('p');p.textContent=message;sourceConflicts.append(p);}return;}
     if(result.conflicts.length) {
       sourceStatus.textContent='检测到双方修改了相同内容。请逐项选择；未冲突的代码会保留。';
       for(const item of result.conflicts) {
@@ -1686,9 +1820,14 @@ async function saveToSource(choices={},checkedRevision=null) {
       sourceConfirm.onclick=()=>saveToSource({...choices,...Object.fromEntries([...sourceConflicts.querySelectorAll('select')].map(select=>[select.dataset.conflict,select.value]))},current.revision);
       return;
     }
+    if (result.unsupported.length) {
+      sourceStatus.textContent = `无法安全保存以下修改，草稿已保留：${result.unsupported.join('；')}`;
+      return;
+    }
     sourceStatus.textContent=`正在备份并写入 ${projectEntry}…`;
     const saved=await sourceRequest('/api/source-save',{revision:current.revision,html:result.html,draft:{version:1,patches:state.patches}});
-    state=createEditorState();rememberSource(saved);clearSelection();persistState(`已写入 ${projectEntry} 源码，历史版本已备份`,{dirty:false});reloadFrame();
+    state=createEditorState({});
+    rememberSource(saved);clearSelection();persistState(`已写入 ${projectEntry}，历史版本已备份`,{dirty:false});reloadFrame();
     document.getElementById('source-change-banner').hidden=true;sourceDialog.close();showToast('已写入项目源码，Codex 可直接读取修改');
   }catch(error){sourceStatus.textContent=`未完成保存：${error.message}。草稿已保留。`;}
   finally{sourceBusy=false;}
@@ -2241,6 +2380,13 @@ resizeHandle.addEventListener('pointerup',()=>finishResize(true));
 resizeHandle.addEventListener('pointercancel',()=>finishResize(false));
 document.addEventListener('keydown',event=>{if(event.key==='Escape')finishResize(false);});
 canvasScroll.addEventListener('scroll',updateResizeHandle);
+canvasArea.addEventListener('click',event=>{
+  if(mode!=='edit' || event.target.closest('button,input,select,textarea,a,[contenteditable="true"]'))return;
+  const background=[canvasArea,canvasScroll,canvasStage,frame.parentElement].includes(event.target)
+    || event.target.closest('.canvas-status,.canvas-controls');
+  if(!background)return;
+  commitCardForm();clearSelection();
+});
 
 
 

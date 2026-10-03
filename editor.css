@@ -85,6 +85,25 @@ button { cursor:pointer; }
 .canvas-controls select { height:25px; border:1px solid var(--line); border-radius:5px; background:#fff; color:var(--ink); padding:0 5px; }
 .canvas-tip { margin-left:auto; color:#8b98a8; }
 .canvas-scroll { min-width:0; min-height:0; flex:1; overflow:auto; display:flex; padding:12px; border:1px solid #d8e1eb; border-radius:8px; background:#e3eaf2; }
+.canvas-area { position:relative; }
+.canvas-area.annotation-open { padding-right:324px; }
+.annotation-connectors { position:absolute; inset:0; z-index:4; width:100%; height:100%; overflow:visible; pointer-events:none; }
+.annotation-rail { position:absolute; z-index:5; top:74px; right:14px; bottom:14px; width:min(300px, calc(100% - 28px)); display:flex; flex-direction:column; overflow:hidden; border:1px solid #ead9a6; border-radius:12px; background:#fffdf2; box-shadow:0 12px 34px #26364d20; transform:translateX(calc(100% + 20px)); transition:transform .22s ease; }
+.canvas-area.annotation-open .annotation-rail { transform:translateX(0); }
+.annotation-rail[hidden] { display:none; }
+.annotation-rail-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:13px 14px 11px; border-bottom:1px solid #f0e2b6; background:#fffaf0; color:#6d4b1d; }
+.annotation-rail-head strong { display:block; font-size:13px; }.annotation-rail-head span { display:block; margin-top:3px; color:#a98245; font-size:10px; }
+.annotation-rail-head>span { margin-top:0; padding:3px 7px; border-radius:10px; color:#8e671c; background:#f7e7b6; font-size:10px; white-space:nowrap; }
+.annotation-list { min-height:0; overflow:auto; padding:10px; }
+.annotation-card { position:relative; margin-bottom:10px; padding:12px 12px 11px 42px; border:1px solid #efdcaa; border-radius:10px; background:#fffdf6; color:#594727; box-shadow:0 2px 8px #8a681b0d; transition:border-color .15s, box-shadow .15s, transform .15s; }
+.annotation-card:last-child { margin-bottom:0; }.annotation-card.active { border-color:#2f80ed; box-shadow:0 0 0 3px #2f80ed18; transform:translateX(-2px); }
+.annotation-card-number { position:absolute; left:12px; top:12px; display:grid; place-items:center; width:24px; height:24px; border-radius:50%; color:#fff; background:#2f80ed; font:700 12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
+.annotation-card-title { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#704c19; font-size:12px; font-weight:700; }.annotation-card-title button { border:0; padding:2px 4px; border-radius:4px; color:#246dcc; background:transparent; font-size:11px; cursor:pointer; }.annotation-card-title button:hover { background:#eaf2ff; }
+.annotation-card-note { margin:7px 0 0; color:#6e5b3d; font-size:11px; line-height:1.65; white-space:pre-wrap; word-break:break-word; }.annotation-card-empty { color:#aa9875; }
+.annotation-card textarea { display:block; width:100%; min-height:78px; margin-top:7px; padding:7px 8px; border:1px solid #e4d4aa; border-radius:6px; outline-color:#2f80ed; resize:vertical; color:#594727; background:#fff; font:11px/1.55 inherit; }
+.annotation-card-actions { display:flex; justify-content:flex-end; gap:6px; margin-top:7px; }.annotation-card-actions button { height:25px; padding:0 8px; border:1px solid #d9c99c; border-radius:5px; color:#77623c; background:#fff; font-size:10px; cursor:pointer; }.annotation-card-actions button.primary { border-color:#2f80ed; color:#fff; background:#2f80ed; }
+@media(max-width:1100px) { .canvas-area.annotation-open { padding-right:284px; }.annotation-rail { width:270px; } }
+@media(max-width:760px) { .canvas-area.annotation-open { padding-right:8px; }.annotation-rail { top:58px; right:8px; bottom:8px; width:min(280px,calc(100% - 16px)); } }
 .canvas-stage { position:relative; flex-shrink:0; margin:0 auto; }
 .canvas-frame,.canvas-frame.desktop,.canvas-frame.tablet,.canvas-frame.mobile { position:absolute; left:0; top:0; margin:0; border:0; border-radius:6px; transform-origin:top left; transition:none; overflow:hidden; }
 .editor-main { grid-template-columns:40px minmax(0,1fr) 0; }
@@ -244,3 +263,9 @@ button { cursor:pointer; }
 /* Keep unscaled iframe bounds out of the scroll container's overflow area. */
 .canvas-stage{overflow:hidden;contain:layout paint}
 .canvas-scroll{overflow-y:hidden}
+
+/* Movement guides stay one screen pixel wide at any canvas zoom. */
+#editor-alignment-guides .alignment-guide { position:absolute; background:rgba(57,120,255,.42); }
+
+.selection-align-actions { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.selection-distribute-actions { margin-top:7px; }

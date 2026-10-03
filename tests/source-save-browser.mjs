@@ -13,7 +13,7 @@ try{
  const page=await browser.newPage({viewport:{width:1700,height:1050}});page.setDefaultTimeout(6000);
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(`${base}/editor/editor.html?project=${p.id}&entry=index.html`);const f=page.frameLocator('#prototype-frame');await f.locator('#title').waitFor();await page.locator('[data-mode="edit"]').click();
- async function edit(text,selector='#title'){await f.locator(selector).click();await page.locator('#prop-text').fill(text);await page.locator('#prop-text').dispatchEvent('change');}
+ async function edit(text,selector='#title'){await f.locator(selector).click({modifiers:['Alt']});await page.locator('#prop-text').fill(text);await page.locator('#prop-text').dispatchEvent('change');}
  async function save(){await page.locator('#save-button').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);await f.locator('#title').waitFor();}
  const compileChecks=await page.evaluate(async()=>{
  const {compileSource}=await import('./source-compiler.mjs');
@@ -58,12 +58,13 @@ try{
  assert.equal(await f.locator('#title').textContent(),'Codex same');
  await edit('Editor winner');html=await readFile(join(project,'index.html'),'utf8');await writeFile(join(project,'index.html'),html.replace('Codex same','Codex newer'));
  await page.locator('#save-button').click();await page.locator('#source-conflicts select').waitFor();await page.locator('#source-conflicts select').selectOption('editor');await page.locator('#source-confirm').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);assert.match(await readFile(join(project,'index.html'),'utf8'),/Editor winner/);
- await f.locator('#title').waitFor();await edit('Dynamic edit','#generated');await page.locator('#save-button').click();await page.waitForFunction(()=>document.querySelector('#source-dialog-status').textContent.includes('无法安全'));
- assert.doesNotMatch(await readFile(join(project,'index.html'),'utf8'),/Dynamic edit/);await page.locator('#source-dialog-close').click();
+ await f.locator('#title').waitFor();await edit('Dynamic edit','#generated');await save();
+ assert.match(await readFile(join(project,'index.html'),'utf8'),/Dynamic edit/);
+ await page.reload();await f.locator('#generated').waitFor();assert.equal(await f.locator('#generated').textContent(),'Dynamic edit');
  await writeFile(join(project,'style.css'),'h1{color:rgb(0,0,255)}');
  await page.locator('#history-button').click();await page.locator('[data-version="original"]').click();await page.waitForFunction(()=>!document.querySelector('#history-restore').disabled);
  const preview=page.frameLocator('#history-preview');assert.equal(await preview.locator('#title').textContent(),'Original');assert.equal(await preview.locator('#title').evaluate(n=>getComputedStyle(n).color),'rgb(255, 0, 0)');
  await page.locator('#history-restore').click();await page.locator('#source-confirm').waitFor();await page.locator('#source-confirm').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);
  assert.equal(await readFile(join(project,'index.html'),'utf8'),original);assert.equal(await readFile(join(project,'style.css'),'utf8'),'h1{color:rgb(255,0,0)}');
- assert.deepEqual(errors,[]);console.log('PASS: source write, disjoint merge, conflict choices, runtime refusal, archived CSS/JS preview, full source restore');
+ assert.deepEqual(errors,[]);console.log('PASS: source write, disjoint merge, conflict choices, runtime persistence, archived CSS/JS preview, full source restore');
 }finally{await browser.close();await new Promise(r=>server.close(r));await rm(temp,{recursive:true,force:true});}

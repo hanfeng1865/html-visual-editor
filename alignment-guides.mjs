@@ -21,3 +21,19 @@ export function alignmentSnap(rect, candidates, tolerance) {
   }
   return result;
 }
+
+// Report every aligned anchor after snapping, so equal-sized elements can show
+// both edges at once. Deduplicate shared coordinates across nearby references.
+export function alignmentMatches(rect, candidates, tolerance) {
+  const matches=[];
+  for(const axis of ['x','y']) {
+    const [start,end]=axis==='x'?['left','right']:['top','bottom'];
+    const anchors=r=>[r[start],(r[start]+r[end])/2,r[end]];
+    anchors(rect).forEach((value,index)=>{
+      if(candidates.some(target=>anchors(target).some(anchor=>Math.abs(anchor-value)<=tolerance)))
+        matches.push({axis,value,index});
+    });
+  }
+  // An edge already communicates alignment; omit a redundant center line.
+  return matches.filter(match=>match.index!==1 || !matches.some(other=>other.axis===match.axis && other.index!==1));
+}

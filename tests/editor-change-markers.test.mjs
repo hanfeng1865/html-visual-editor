@@ -37,14 +37,16 @@ test('visual editor only shows manually drawn change markers', async () => {
   assert.match(script, /boxViewMatches/);
 });
 
-test('editor uses the same compact label for every marker', async () => {
+test('editor maps numbered markers to a right-side annotation rail', async () => {
+  const html = await readFile(new URL('../editor.html', import.meta.url), 'utf8');
   const script = await readFile(new URL('../editor.js', import.meta.url), 'utf8');
 
-  assert.match(script, /editButton\.textContent = '✎'/);
-  assert.doesNotMatch(script, /label\.textContent = box \? '✎  手动标记' : '✎  已改动'/);
-  assert.match(script, /top:hasRoomAbove\?'-23px':hasRoomBelow\?'calc\(100% \+ 4px\)':'3px'/);
-  assert.match(script, /opacity:'0\.82'/);
-  assert.match(script, /label\.addEventListener\('mouseenter'/);
+  assert.match(html, /id="annotation-rail"/);
+  assert.match(html, /id="annotation-connectors"/);
+  assert.match(script, /annotation-card-number/);
+  assert.match(script, /drawAnnotationConnectors/);
+  assert.match(script, /C \$\{startX \+ bend\}/);
+  assert.match(script, /查看右侧改动说明/);
 });
 
 test('editor pencil selects manual markers without swallowing note clicks', async () => {

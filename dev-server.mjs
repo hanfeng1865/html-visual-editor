@@ -82,8 +82,8 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
       if(url.pathname==='/api/ai/settings' && ['GET','POST'].includes(request.method))return json(response,200,await ai.settings(request.method==='POST'?await readJsonBody(request):undefined));
       if(['/api/ai/generate','/api/ai/apply'].includes(url.pathname) && request.method==='POST') {
         const project=await workspaces.describe(url.searchParams.get('project')||'builtin',url.searchParams.get('entry')||undefined);
-        const body=await readJsonBody(request);
-        return json(response,200,url.pathname.endsWith('generate')?await ai.generate(project):await ai.apply(project,body));
+        const body=await readJsonBody(request,url.pathname.endsWith('generate')?8*1024*1024:2*1024*1024);
+        return json(response,200,url.pathname.endsWith('generate')?await ai.generate(project,body):await ai.apply(project,body));
       }
       if(url.pathname.startsWith('/ai-preview/') || url.pathname.startsWith('/ai-baseline/')) {
         const [, ,id,...parts]=url.pathname.split('/');const value=ai.proposal(id);

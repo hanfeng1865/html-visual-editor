@@ -362,3 +362,93 @@ button { cursor:pointer; }
 
 .ai-empty p{max-width:240px;}
 #ai-start-edit{margin-top:15px;min-height:32px;font-size:11px;}
+
+.ai-chat-panel{margin-bottom:20px;padding:16px;border:1px solid #dce5f2;border-radius:11px;background:#f8faff;}
+.ai-chat-panel h3{margin:0;font-size:13px;color:#33455d;}.ai-chat-hint{margin:8px 0 12px;color:#718099;font-size:11px;line-height:1.7;}
+.ai-chat-history{margin-bottom:12px;}
+.ai-chat-history>summary{padding:6px 0;color:#718099;font-size:12px;cursor:pointer;}
+.ai-chat-history[open]>summary{margin-bottom:6px;}
+.ai-chat-log{max-height:220px;overflow:auto;margin-bottom:12px;padding:8px;border-radius:8px;background:#fff;border:1px solid #e4e9ef;}
+.ai-chat-message{display:flex;gap:10px;margin:0;padding:10px 8px;font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;}.ai-chat-message b{flex:0 0 22px;color:#2468d8;}.ai-chat-message.user{background:#f5f8fd;border-radius:6px;}.ai-chat-message.assistant{color:#5a6a80;}
+.ai-chat-label{display:block;margin:0 0 7px;font-size:12px;color:#46536a;}
+#ai-chat-input{display:block;width:100%;box-sizing:border-box;min-height:92px;max-height:300px;padding:12px;border:1px solid #dce3ed;border-radius:9px;background:#fff;color:#17243a;font:12px/1.7 system-ui,sans-serif;resize:vertical;}
+#ai-chat-input:focus{outline:2px solid #6596ec;outline-offset:1px;}
+.ai-chat-controls{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;}.ai-chat-controls span{color:#8793a4;font-size:10px;line-height:1.6;}
+@media(max-width:680px){.ai-chat-controls{align-items:flex-start;flex-direction:column;}.ai-chat-controls button{align-self:flex-end;}}
+
+/* AI shares the left sidebar; element properties remain on the right. */
+.editor-main.ai-open,.editor-main.ai-open.help-open,.editor-main.ai-open.layers-open{--ai-sidebar-width:min(380px,42vw);grid-template-columns:var(--ai-sidebar-width) minmax(0,1fr) 0;}
+.editor-main.ai-open.inspector-open,.editor-main.ai-open.editing-mode{grid-template-columns:var(--ai-sidebar-width) minmax(0,1fr) 310px;}
+.editor-main.ai-open .editor-help{display:flex;flex-direction:column;position:static;width:auto;min-width:0;box-shadow:none;}
+.editor-main.ai-open .editor-help>.editor-help-toggle{flex-shrink:0;}
+.editor-main.ai-open .help-toggle-label{opacity:1;}
+.editor-main.ai-open #structure-panel,.editor-main.ai-open #editor-help-content{display:none;}
+.editor-main.ai-open .editor-help #ai-dialog{position:static;inset:auto;width:100%;height:auto;max-width:none;max-height:none;min-height:0;margin:0;padding:0;border:0;border-radius:0;box-shadow:none;flex:1;}
+.editor-main.ai-open #ai-dialog .ai-head{padding:14px 16px;gap:8px;}
+.editor-main.ai-open #ai-title{font-size:15px;}.editor-main.ai-open .ai-heading{gap:8px;}.editor-main.ai-open .ai-heading p{font-size:10px;line-height:1.5;}
+.editor-main.ai-open .ai-symbol{width:30px;height:30px;font-size:18px;flex-shrink:0;}
+.editor-main.ai-open .ai-body{padding:14px;flex:1;}
+.editor-main.ai-open .ai-overview{display:none;}
+.editor-main.ai-open .ai-chat-panel{padding:12px;margin-bottom:14px;}
+.editor-main.ai-open .ai-chat-controls{flex-direction:column;align-items:stretch;gap:8px;}
+.editor-main.ai-open .ai-chat-controls button{align-self:flex-end;}
+.editor-main.ai-open .ai-columns{grid-template-columns:minmax(0,1fr);gap:12px;}
+.editor-main.ai-open .ai-empty{min-height:0;padding:16px;}.editor-main.ai-open .ai-empty-icon{display:none;}
+.editor-main.ai-open .ai-footer{padding:12px 14px;flex-direction:column;align-items:stretch;gap:10px;}
+.editor-main.ai-open .ai-actions{flex-wrap:wrap;justify-content:flex-end;}
+.editor-main.ai-open #ai-preview{height:260px;}
+.editor-main.ai-open #ai-chat-button{color:#2468d8;background:#eaf2ff;}
+.editor-main.ai-open #ai-chat-button .help-toggle-arrow{transform:rotate(180deg);}
+.editor-help-content{max-height:calc(100% - 126px);}
+@media(max-width:1100px){.editor-main.ai-open.inspector-open,.editor-main.ai-open.editing-mode{grid-template-columns:var(--ai-sidebar-width) minmax(0,1fr) 290px;}}
+@media(max-width:900px){.editor-main.ai-open.inspector-open,.editor-main.ai-open.editing-mode{grid-template-columns:var(--ai-sidebar-width) minmax(0,1fr) 240px;}}
+
+.ai-attachment-tools{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;}.ai-attachment-tools button{font-size:11px;min-height:30px;padding:5px 8px;}.ai-attachment-hint{font-size:10px;line-height:1.7;color:#7c899c;margin:0 0 10px;}
+.ai-selection-context{display:flex;align-items:center;gap:8px;padding:8px;margin-bottom:10px;border:1px solid #d9e7fa;border-radius:6px;background:#edf4ff;color:#406487;font-size:11px;}.ai-selection-context span{flex:1;overflow-wrap:anywhere;}.ai-selection-context button{border:0;background:transparent;color:#7286a0;}
+.ai-images{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}.ai-images figure{position:relative;width:84px;margin:0;border:1px solid #dce3ed;border-radius:7px;padding:4px;background:#fff;}.ai-images img{display:block;width:74px;height:58px;object-fit:contain;}.ai-images figcaption{font-size:9px;color:#718099;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:4px;}.ai-images button{position:absolute;right:-5px;top:-5px;width:20px;height:20px;border:1px solid #dce3ed;border-radius:50%;background:#fff;color:#6b7d94;}
+
+/* Compact sidebar navigation and a single primary composer. */
+.sidebar-navigation{display:contents;}
+.editor-main:is(.ai-open,.layers-open,.help-open) .sidebar-navigation{display:flex;align-items:center;gap:4px;padding:8px;border-bottom:1px solid var(--line);flex-shrink:0;}
+.editor-main:is(.ai-open,.layers-open,.help-open) .sidebar-navigation .editor-help-toggle{flex:1;justify-content:center;height:34px;padding:0 5px;border:0;border-radius:6px;gap:4px;}
+.editor-main:is(.ai-open,.layers-open,.help-open) .sidebar-navigation .help-toggle-label{flex:initial;font-size:11px;}
+.editor-main:is(.ai-open,.layers-open,.help-open) .sidebar-navigation .help-toggle-icon{width:16px;flex-basis:16px;height:16px;background:transparent;}
+.editor-main:is(.ai-open,.layers-open,.help-open) .sidebar-navigation .help-toggle-arrow{display:none;}
+.editor-main.ai-open #ai-dialog .ai-head{padding:15px 16px 12px;border-bottom:0;}
+.editor-main.ai-open .ai-symbol{display:none;}
+.editor-main.ai-open .ai-heading p{margin-top:5px;color:#8793a4;}
+.editor-main.ai-open .ai-body{padding:6px 16px 16px;}
+.editor-main.ai-open .ai-chat-panel{padding:0;border:0;border-radius:0;background:transparent;margin-bottom:20px;}
+.editor-main.ai-open .ai-chat-label{font-size:12px;font-weight:600;margin-bottom:10px;}
+.editor-main.ai-open #ai-chat-input{min-height:152px;font-size:12px;line-height:1.8;padding:12px;}
+.editor-main.ai-open .ai-attachment-tools{margin:10px 0 12px;gap:6px;}
+.editor-main.ai-open .ai-attachment-tools button{background:#f6f8fb;border-color:transparent;font-weight:400;font-size:11px;padding:5px 8px;}
+.editor-main.ai-open .ai-attachment-tools button:hover{background:#edf3fc;color:#2468d8;}
+.editor-main.ai-open .ai-attachment-tools button[aria-pressed="true"]{background:#eaf2ff;color:#2468d8;border-color:#b6d0f9;}
+.editor-main.ai-open .ai-chat-controls{flex-direction:row;align-items:center;justify-content:space-between;gap:8px;margin:0;}
+.editor-main.ai-open .ai-selection-context,.editor-main.ai-open .ai-images{margin:10px 0 0;}
+.editor-main.ai-open .ai-compose-help,.editor-main.ai-open .ai-chat-history{margin:0;border-top:1px solid #edf0f4;}
+.editor-main.ai-open .ai-compose-help>summary,.editor-main.ai-open .ai-chat-history>summary{cursor:pointer;padding:12px 0;font-size:12px;color:#617085;}
+.ai-compose-help p{font-size:11px;color:#718099;line-height:1.8;margin:0 0 12px;}
+.editor-main.ai-open .ai-columns{gap:0;}
+.editor-main.ai-open .ai-config-panel,.editor-main.ai-open .ai-queue-panel{border:0;border-top:1px solid #edf0f4;border-radius:0;overflow:visible;}
+.editor-main.ai-open #ai-settings>summary,.editor-main.ai-open .ai-queue-panel>summary{padding:12px 0;border:0;font-size:12px;font-weight:500;color:#617085;cursor:pointer;}
+.editor-main.ai-open .ai-queue-panel>summary{display:list-item;list-style-position:inside;}
+.editor-main.ai-open .ai-queue-panel>summary .ai-count{display:inline-block;float:right;min-width:20px;height:auto;text-align:center;}
+.editor-main.ai-open .ai-form{padding:8px 0;}
+.editor-main.ai-open .ai-badge{padding:2px 6px;font-size:10px;}
+.editor-main.ai-open .ai-queue-actions{display:flex;justify-content:flex-end;padding:0 0 12px;}
+.editor-main.ai-open .ai-queue-panel:has(#ai-empty:not([hidden])) .ai-queue-actions{display:none;}
+.editor-main.ai-open .ai-footer{background:#fafbfd;padding:10px 16px;}
+.editor-main.ai-open .ai-chat-log{margin-bottom:12px;}
+
+/* Every expanded tool uses the same left panel and navigation row. */
+.editor-main:is(.ai-open,.layers-open,.help-open){--ai-sidebar-width:min(380px,42vw);grid-template-columns:var(--ai-sidebar-width) minmax(0,1fr) 0;}
+.editor-main:is(.ai-open,.layers-open,.help-open).inspector-open,.editor-main:is(.ai-open,.layers-open,.help-open).editing-mode{grid-template-columns:var(--ai-sidebar-width) minmax(0,1fr) 310px;}
+.editor-main:is(.ai-open,.layers-open,.help-open) .editor-help{display:flex;flex-direction:column;position:static;width:auto;min-width:0;overflow:hidden;box-shadow:none;}
+.editor-main:is(.ai-open,.layers-open,.help-open) .help-toggle-label{opacity:1;}
+.editor-main:is(.ai-open,.layers-open,.help-open) #structure-panel{min-height:0;overflow:auto;flex:1;}
+.editor-main:is(.ai-open,.layers-open,.help-open) .editor-help-content{min-height:0;max-height:none;flex:1;overflow:auto;}
+.editor-main.layers-open:not(.ai-open) #layers-toggle,.editor-main.help-open:not(.ai-open) #editor-help-toggle,.editor-main.ai-open #ai-chat-button{color:#2468d8;background:#eaf2ff;}
+@media(max-width:1100px){.editor-main:is(.ai-open,.layers-open,.help-open).inspector-open,.editor-main:is(.ai-open,.layers-open,.help-open).editing-mode{grid-template-columns:var(--ai-sidebar-width) minmax(0,1fr) 290px;}}
+@media(max-width:900px){.editor-main:is(.ai-open,.layers-open,.help-open).inspector-open,.editor-main:is(.ai-open,.layers-open,.help-open).editing-mode{grid-template-columns:var(--ai-sidebar-width) minmax(0,1fr) 240px;}}

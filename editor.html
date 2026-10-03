@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>HTML 可视化编辑器</title>
-  <link rel="stylesheet" href="editor.css?v=8" />
+  <link rel="stylesheet" href="editor.css?v=11" />
 </head>
 <body>
   <div class="editor-shell">
@@ -55,17 +55,19 @@
     <div id="saveability-summary" role="status" aria-live="polite">正在检查页面的保存方式…</div>
     <main class="editor-main">
       <aside class="editor-help" aria-label="图层与组件">
-        <button id="layers-toggle" class="editor-help-toggle" type="button" aria-expanded="false" title="展开图层与组件"><span class="help-toggle-icon">▤</span><span class="help-toggle-label">图层与组件</span><span class="help-toggle-arrow">›</span></button>
+        <nav class="sidebar-navigation" aria-label="编辑工具"><button id="layers-toggle" class="editor-help-toggle" type="button" aria-expanded="false" title="展开图层与组件"><span class="help-toggle-icon">▤</span><span class="help-toggle-label">图层与组件</span><span class="help-toggle-arrow">›</span></button><button id="ai-chat-button" class="editor-help-toggle" type="button" title="AI 对话：用自然语言修改界面" aria-expanded="false" aria-controls="ai-dialog"><span class="help-toggle-icon" aria-hidden="true">✦</span><span class="help-toggle-label">AI 对话</span><span class="help-toggle-arrow" aria-hidden="true">›</span></button><button id="editor-help-toggle" class="editor-help-toggle" type="button" aria-expanded="false" aria-controls="editor-help-content" title="展开使用说明">
+          <span class="help-toggle-icon" aria-hidden="true">?</span>
+          <span class="help-toggle-label">使用说明</span>
+          <span class="help-toggle-arrow" aria-hidden="true">›</span>
+        </button></nav>
+
         <div id="structure-panel" hidden>
           <div class="structure-tabs"><button type="button" data-structure-tab="layers" class="active">图层</button><button type="button" data-structure-tab="insert">新增组件</button></div>
           <section id="layers-panel"><input id="layer-search" type="search" placeholder="搜索文字、图层或 ID" aria-label="搜索图层" /><p class="structure-hint">点击选择；拖动图层到容器可移入。隐藏的元素也可在这里找到。</p><div id="layer-tree" aria-label="页面图层"></div></section>
           <section id="insert-panel" hidden><p class="structure-hint">将组件拖到画布里的目标位置，松手添加。绿色边框显示放入的容器，不挤动现有内容；也可选中容器后点击添加。图片请点击选择本地文件。</p><div class="component-palette"><button data-insert="card">▣ 指标卡片</button><button data-insert="container">▤ 空白容器</button><button data-insert="heading">T 标题</button><button data-insert="text">¶ 文字</button><button data-insert="button">▭ 按钮</button><button data-insert="divider">― 分隔线</button><button data-insert="circle">○ 圆形</button><button data-insert="rectangle">▭ 矩形</button><button data-insert="image">▧ 图片</button></div></section>
         </div>
-        <button id="editor-help-toggle" class="editor-help-toggle" type="button" aria-expanded="false" aria-controls="editor-help-content" title="展开使用说明">
-          <span class="help-toggle-icon" aria-hidden="true">?</span>
-          <span class="help-toggle-label">使用说明</span>
-          <span class="help-toggle-arrow" aria-hidden="true">›</span>
-        </button>
+
+
         <div id="editor-help-content" class="editor-help-content" hidden>
           <h2>怎么编辑</h2>
           <ol>
@@ -77,6 +79,7 @@
           </ol>
           <div class="help-card">
             <b>AI 协作方式</b>
+            <p>点击左侧“AI 对话”，在左侧栏输入要求，主画布仍可操作。生成代码遵守本编辑器兼容要求；发送后自动检查、备份并保存，完成后刷新主界面。</p>
             <p>在原文件夹中修改 HTML/CSS 后点击“刷新代码”。手动调整先作为浏览器草稿自动保存，确认后点击“保存到项目”写入本地文件。</p>
           </div>
           <div class="help-card">
@@ -103,11 +106,67 @@
 在可视化编辑器中修改一个标题、一处样式、一个数值和一个组件位置，保存后关闭编辑器，通过普通本地 HTTP 服务打开原项目，确认修改仍然存在。</textarea>
             </details>
           </div>
-          <div class="help-card subtle">
+          <div class="help-card subtle" hidden>
             <b>当前选择</b>
             <p id="selection-path">尚未选择元素</p><p>点击文字或图标即可直接选中；点卡片空白处选整卡。按住 Alt 单击可切换重叠元素与父级。</p>
           </div>
         </div>
+  <dialog id="ai-dialog" aria-labelledby="ai-title" aria-modal="false">
+    <header class="ai-head">
+      <div class="ai-heading"><span class="ai-symbol" aria-hidden="true">✦</span><div><h2 id="ai-title">AI 修改</h2><p>描述需求，直接修改并保存源码</p></div></div>
+      <button id="ai-close" class="ai-icon-button" type="button" aria-label="关闭 AI 侧栏">×</button>
+    </header>
+    <div class="ai-body">
+      <div class="ai-overview"><span aria-hidden="true">✓</span><p>普通修改先保存，AI 按你的要求修改最新源码。<br><small>AI 自动检查、备份并保存，完成后刷新主界面。</small></p></div>
+      <section class="ai-chat-panel" aria-label="对话修改界面">
+        <label class="ai-chat-label" for="ai-chat-input">想修改哪里？</label>
+        <textarea id="ai-chat-input" rows="5" maxlength="12000" placeholder="例如：把顶部指标卡改成两列，金额字号加大。
+
+可以引用画布区域，或粘贴截图说明。"></textarea>
+        <div id="ai-selection-context" class="ai-selection-context" hidden><span id="ai-selection-summary"></span><button id="ai-selection-clear" type="button" aria-label="移除选区引用">×</button></div>
+        <div id="ai-images" class="ai-images" aria-label="本次截图附件" hidden></div>
+        <div class="ai-attachment-tools"><button id="ai-attach-selection" class="ai-secondary" type="button" title="将画布中选中的元素交给 AI">引用选中元素</button><button id="ai-attach-region" class="ai-secondary" type="button" aria-pressed="false" title="在画布中拖动选择要修改的区域">框选区域</button><button id="ai-image-upload" class="ai-secondary" type="button" title="上传图片，也可以直接粘贴到输入框">上传图片</button><input id="ai-image-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden></div>
+        <div class="ai-chat-controls"><span>⌘ / Ctrl + Enter</span><button id="ai-chat-send" class="ai-primary" type="button" disabled>发送并修改 ↑</button></div>
+      </section>
+      <details class="ai-compose-help"><summary>使用提示</summary><p>先引用选中元素或框选区域，再描述修改要求。截图可上传或粘贴到输入框，最多 3 张，需要支持图片的模型。</p><p>AI 会遵守本编辑器的兼容要求，保留稳定标识，生成方便后续编辑和保存的静态源码。完成后自动备份、保存并刷新画布。</p></details>
+      <details id="ai-chat-history" class="ai-chat-history" hidden><summary>历史对话</summary><div id="ai-chat-log" class="ai-chat-log" role="log" aria-label="当前页面的 AI 对话记录" aria-live="polite" hidden></div></details>
+      <div class="ai-columns">
+        <section class="ai-config-panel">
+          <details id="ai-settings">
+            <summary><span>模型连接</span><span id="ai-connection" class="ai-badge">未配置</span></summary>
+            <div class="ai-form">
+              <label for="ai-endpoint">接口地址<span class="ai-field-hint">兼容 Chat Completions</span></label>
+              <input id="ai-endpoint" type="url" placeholder="https://api.example.com/v1" spellcheck="false">
+              <div class="ai-model-heading"><label for="ai-model">模型名称</label><button id="ai-models-load" type="button">加载模型</button></div>
+              <div id="ai-model-picker" class="ai-model-picker">
+                <input id="ai-model" role="combobox" aria-expanded="false" aria-controls="ai-model-options" aria-autocomplete="list" autocomplete="off" placeholder="选择模型或手动填写" spellcheck="false">
+                <button id="ai-model-toggle" type="button" aria-label="展开模型选项" aria-expanded="false">⌄</button>
+                <div id="ai-model-menu" class="ai-model-menu" hidden>
+                  <input id="ai-model-search" placeholder="搜索模型…" aria-label="搜索模型" autocomplete="off">
+                  <div id="ai-model-options" role="listbox" aria-label="可用模型"></div>
+                </div>
+              </div><p id="ai-models-status" role="status">从接口加载列表，也可手动填写。</p>
+              <label for="ai-api-key">API 密钥</label><input id="ai-api-key" type="password" placeholder="填写供应商提供的 API Key" autocomplete="off" spellcheck="false">
+              <p class="ai-field-note">保存后仅保留在本机配置文件中，不会显示或返回密钥。</p>
+              <details class="ai-advanced"><summary>使用环境变量（可选）</summary><label for="ai-key-env">环境变量名</label><input id="ai-key-env" placeholder="MODEL_API_KEY" spellcheck="false"><p class="ai-field-note">例如 MODEL_API_KEY，填写变量名。设置后需重启服务。</p></details>
+              <p id="ai-http-note" class="ai-field-note" hidden>此地址使用 HTTP，密钥会以明文传输；建议供应商启用 HTTPS。</p>
+              <div class="ai-connection-actions"><button id="ai-settings-save" class="ai-secondary" type="button">保存连接设置</button><button id="ai-test" class="ai-secondary" type="button">测试连接</button></div>
+              <p id="ai-test-result" role="status" hidden></p>
+              <p class="ai-privacy">生成时会将相关源码发送至此接口。</p>
+            </div>
+          </details>
+        </section>
+        <details id="ai-queue" class="ai-queue-panel">
+          <summary class="ai-section-heading"><span>可视化编辑待办</span><span id="ai-pending-count" class="ai-count">0</span></summary>
+          <div id="ai-empty" class="ai-empty"><span class="ai-empty-icon" aria-hidden="true">✓</span><strong>还没有需要 AI 写入的修改</strong><p id="ai-empty-detail">可以直接在上方输入修改要求；也可编辑组件，需要 AI 写回的修改会显示在这里。</p><button id="ai-start-edit" class="ai-secondary" type="button">去编辑组件</button></div>
+          <div id="ai-pending"></div>
+          <div class="ai-queue-actions"><button id="ai-generate" class="ai-primary" type="button" disabled>处理待办并保存</button></div>
+        </details>
+      </div>
+      <details id="ai-results" hidden><summary class="ai-results-title">查看本次源码修改</summary><div id="ai-diff"></div></details>
+    </div>
+    <footer class="ai-footer"><p id="ai-status" role="status"></p></footer>
+  </dialog>
       </aside>
 
       <section class="canvas-area">
@@ -258,6 +317,7 @@
             </div>
           </section>
         </div>
+
       </aside>
     </main>
   </div>
@@ -267,49 +327,7 @@
     <p id="comparison-status" role="status"></p>
     <div id="comparison-panes"><section><h3 id="comparison-old-label">第一个版本</h3><div class="comparison-viewport"><iframe id="comparison-old" title="历史版本" sandbox="allow-scripts allow-same-origin"></iframe></div></section><section id="comparison-current-pane"><h3>当前效果（包含本页未保存修改）</h3><div class="comparison-viewport"><iframe id="comparison-now" title="当前效果" sandbox="allow-scripts allow-same-origin"></iframe></div></section></div>
   </dialog>
-  <dialog id="ai-dialog" aria-labelledby="ai-title">
-    <header class="ai-head">
-      <div class="ai-heading"><span class="ai-symbol" aria-hidden="true">✦</span><div><h2 id="ai-title">AI 辅助写入</h2><p>处理无法直接保存的修改</p></div></div>
-      <button id="ai-close" class="ai-icon-button" type="button" aria-label="关闭 AI 写入">×</button>
-    </header>
-    <div class="ai-body">
-      <div class="ai-overview"><span aria-hidden="true">✓</span><p>普通修改直接保存，AI 只处理剩余待办。<br><small>生成后先预览，确认后再写入源码。</small></p></div>
-      <div class="ai-columns">
-        <section class="ai-config-panel">
-          <details id="ai-settings">
-            <summary><span>模型连接</span><span id="ai-connection" class="ai-badge">未配置</span></summary>
-            <div class="ai-form">
-              <label for="ai-endpoint">接口地址<span class="ai-field-hint">兼容 Chat Completions</span></label>
-              <input id="ai-endpoint" type="url" placeholder="https://api.example.com/v1" spellcheck="false">
-              <div class="ai-model-heading"><label for="ai-model">模型名称</label><button id="ai-models-load" type="button">加载模型</button></div>
-              <div id="ai-model-picker" class="ai-model-picker">
-                <input id="ai-model" role="combobox" aria-expanded="false" aria-controls="ai-model-options" aria-autocomplete="list" autocomplete="off" placeholder="选择模型或手动填写" spellcheck="false">
-                <button id="ai-model-toggle" type="button" aria-label="展开模型选项" aria-expanded="false">⌄</button>
-                <div id="ai-model-menu" class="ai-model-menu" hidden>
-                  <input id="ai-model-search" placeholder="搜索模型…" aria-label="搜索模型" autocomplete="off">
-                  <div id="ai-model-options" role="listbox" aria-label="可用模型"></div>
-                </div>
-              </div><p id="ai-models-status" role="status">从接口加载列表，也可手动填写。</p>
-              <label for="ai-api-key">API 密钥</label><input id="ai-api-key" type="password" placeholder="填写供应商提供的 API Key" autocomplete="off" spellcheck="false">
-              <p class="ai-field-note">保存后仅保留在本机配置文件中，不会显示或返回密钥。</p>
-              <details class="ai-advanced"><summary>使用环境变量（可选）</summary><label for="ai-key-env">环境变量名</label><input id="ai-key-env" placeholder="MODEL_API_KEY" spellcheck="false"><p class="ai-field-note">例如 MODEL_API_KEY，填写变量名。设置后需重启服务。</p></details>
-              <p id="ai-http-note" class="ai-field-note" hidden>此地址使用 HTTP，密钥会以明文传输；建议供应商启用 HTTPS。</p>
-              <div class="ai-connection-actions"><button id="ai-settings-save" class="ai-secondary" type="button">保存连接设置</button><button id="ai-test" class="ai-secondary" type="button">测试连接</button></div>
-              <p id="ai-test-result" role="status" hidden></p>
-              <p class="ai-privacy">生成时会将相关源码发送至此接口。</p>
-            </div>
-          </details>
-        </section>
-        <section class="ai-queue-panel">
-          <div class="ai-section-heading"><h3>待处理修改</h3><span id="ai-pending-count" class="ai-count">0</span></div>
-          <div id="ai-empty" class="ai-empty"><span class="ai-empty-icon" aria-hidden="true">✓</span><strong>还没有需要 AI 写入的修改</strong><p id="ai-empty-detail">先进入编辑模式，选中并修改组件；需要 AI 写回的修改会自动显示在这里。</p><button id="ai-start-edit" class="ai-secondary" type="button">去编辑组件</button></div>
-          <div id="ai-pending"></div>
-        </section>
-      </div>
-      <div id="ai-results" hidden><h3 class="ai-results-title">修改预览</h3><div id="ai-diff"></div><iframe id="ai-preview" title="AI 修改效果预览" hidden></iframe></div>
-    </div>
-    <footer class="ai-footer"><p id="ai-status" role="status"></p><div class="ai-actions"><button id="ai-generate" class="ai-primary" type="button" disabled>生成修改并验证</button><button id="ai-apply" class="ai-primary" type="button" disabled hidden>确认写入源码</button></div></footer>
-  </dialog>
+
   <dialog id="source-dialog"  aria-labelledby="source-dialog-title">
     <div class="project-dialog-head"><h2 id="source-dialog-title">保存到源码</h2><button id="source-dialog-close" type="button" aria-label="关闭">×</button></div>
     <p id="source-dialog-status" role="status"></p><div id="source-conflicts"></div>
@@ -335,7 +353,7 @@
       <button id="choose-project-folder" type="button" class="choose-folder-button">选择本机文件夹…</button>
       <label for="project-folder-path">或粘贴文件夹完整路径</label>
       <input id="project-folder-path" type="text" placeholder="/Users/你的名字/Documents/我的原型" autocomplete="off" />
-      <p class="project-note">仅关联，不搬移文件。编辑时自动保留浏览器草稿；点击「保存到项目」或 ⌘/Ctrl+S 才会写入原 HTML，并自动备份。AI 待办确认写入后才能交付完整源码。支持普通静态页面；需要构建或后端的项目，请先生成静态页面。</p>
+      <p class="project-note">仅关联，不搬移文件。编辑时自动保留浏览器草稿；点击「保存到项目」或 ⌘/Ctrl+S 才会写入原 HTML，并自动备份。AI 待办处理并保存后才能交付完整源码。支持普通静态页面；需要构建或后端的项目，请先生成静态页面。</p>
       <p id="project-open-status" role="status"></p>
       <div class="project-dialog-actions"><button type="submit" id="confirm-open-project">关联并打开</button></div>
     </form>

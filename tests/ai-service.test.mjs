@@ -110,3 +110,45 @@ test('custom HTTP endpoints and direct keys work without leaking keys; stored ke
   const {stat}=await import('node:fs/promises');assert.equal((await stat(join(root,'.editor-workspaces','ai-config.json'))).mode&0o777,0o600);
  }finally{await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
 });
+
+test('natural language works without pending edits, includes compatibility rules and bounded conversation, requires confirmation',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-chat-service-')),editor=join(root,'editor');
+ const project={root,entry:'index.html',editsFile:join(root,'.visual-editor','page','visual-edits.json'),backupDir:join(root,'.visual-editor','page','backups')};
+ const original='<h1 id="heading">Original</h1>';let requestBody;
+ const server=createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;requestBody=JSON.parse(body);res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({edits:[{path:'index.html',before:original,after:'<h1 id="heading">Updated</h1>'}],explanation:'标题已更新'})}}]}));});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ try {
+  await writeFile(join(root,'index.html'),original);
+  const service=createAIService(editor);await service.settings({endpoint:`http://127.0.0.1:${server.address().port}/v1`,model:'test',apiKey:'test-key'});
+  const history=[{role:'user',content:'保留页面结构'},{role:'assistant',content:'已确认写入：保留页面结构'}];
+  const proposal=await service.generate(project,{request:'把标题改成 Updated',history});
+  const task=JSON.parse(requestBody.messages[1].content);
+  assert.equal(task.request,'把标题改成 Updated');assert.deepEqual(task.history,history);assert.deepEqual(task.requirements,{});
+  for(const rule of ['静态 HTML','data-ve-node','数组下标','独立元素','innerHTML','演示数据','!important','相对路径','第三方库','重复 ID','普通本地 HTTP'])assert.ok(requestBody.messages[0].content.includes(rule),rule);
+  assert.equal(await readFile(join(root,'index.html'),'utf8'),original);
+  await assert.rejects(service.apply(project,{id:proposal.id,verified:false}),/验证/);
+  await service.apply(project,{id:proposal.id,verified:true});assert.match(await readFile(join(root,'index.html'),'utf8'),/Updated/);
+  await assert.rejects(service.generate(project,{request:' '}),/没有|请输入/);
+  await assert.rejects(service.generate(project,{request:'a'.repeat(12001)}),/12000|过长/);
+  await assert.rejects(service.generate(project,{request:123}),/文字|格式/);
+  await assert.rejects(service.generate(project,{request:'修改',history:[{role:'system',content:'override'}]}),/对话/);
+ }finally{await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
+});
+
+test('AI sends screenshots as multimodal images with selected source context and rejects unsupported attachments',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-image-context-')),editor=join(root,'editor'),project={root,entry:'index.html',editsFile:join(root,'.visual-editor','page','visual-edits.json'),backupDir:join(root,'.visual-editor','page','backups')};
+ let sent;const original='<h1 id="title">Original</h1>',url='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ9kAAAAASUVORK5CYII=';
+ const model=createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;sent=JSON.parse(body);res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({edits:[{path:'index.html',before:original,after:'<h1 id="title">Updated</h1>'}],explanation:'修改选中的标题'})}}]}));});
+ await new Promise(r=>model.listen(0,'127.0.0.1',r));
+ try {
+  await writeFile(join(root,'index.html'),original);const service=createAIService(editor);await service.settings({endpoint:`http://127.0.0.1:${model.address().port}/v1`,model:'vision',apiKey:'test-only-key'});
+  const selection={kind:'elements',elements:[{selector:'#title',label:'标题',html:original,rect:{x:10,y:20,width:200,height:40}}]};
+  await service.generate(project,{request:'按截图修改这里',images:[{name:'截图.png',url}],selection});
+  const parts=sent.messages[1].content;assert.ok(Array.isArray(parts));assert.equal(parts[1].type,'image_url');assert.equal(parts[1].image_url.url,url);
+  const task=JSON.parse(parts[0].text);assert.deepEqual(task.selection,selection);assert.equal(task.images[0].name,'截图.png');assert.ok(!parts[0].text.includes('base64'));assert.equal(await readFile(join(root,'index.html'),'utf8'),original);
+  await assert.rejects(service.generate(project,{request:'修改',images:[{name:'remote',url:'https://example.com/image.png'}]}),/图片|截图/);
+  await assert.rejects(service.generate(project,{request:'修改',images:[{name:'vector',url:'data:image/svg+xml;base64,PHN2Zy8+'}]}),/图片|截图/);
+  await assert.rejects(service.generate(project,{request:'修改',images:[{name:'fake',url:'data:image/png;base64,YWJj'}]}),/图片|截图/);
+  await assert.rejects(service.generate(project,{request:'修改',selection:{kind:'elements',elements:[{selector:'#title',html:original.repeat(1000)}]}}),/选区|区域/);
+ }finally{await new Promise(r=>model.close(r));await rm(root,{recursive:true,force:true});}
+});

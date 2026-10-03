@@ -1,3 +1,5 @@
+import {createAIAttachments} from './ai-attachments.mjs';
+import {createAIChat} from './ai-chat.mjs';
 import {verifyAIPage,compareAIErrors,loadAIFrame} from './ai-editor.mjs';
 import {splitEditRoutes} from './ai-routing.mjs';
 import { segmentIntersectsRect } from './sweep-selection.mjs';
@@ -365,7 +367,7 @@ function nudgeSelection(direction, step=1) {
 function handleEditorKey(event) {
   if((event.metaKey || event.ctrlKey) && event.key.toLowerCase()==='s' && !event.altKey && !event.shiftKey) {
     event.preventDefault();event.stopImmediatePropagation();
-    if(!projectReady || sourceBusy || document.querySelector('dialog[open]'))return;
+    if(!projectReady || sourceBusy || document.querySelector('dialog[open]:not(#ai-dialog)'))return;
     event.target.blur?.();commitCardForm();void saveToSource();return;
   }
   if(document.getElementById('source-dialog')?.open || document.getElementById('comparison-dialog')?.open)return;
@@ -375,7 +377,7 @@ function handleEditorKey(event) {
     cancelMovement();
     finishResize(false);
     if(!activeGesture && mode==='edit' && selectedElements.size
-      && !document.querySelector('dialog[open]')
+      && !document.querySelector('dialog[open]:not(#ai-dialog)')
       && !event.target.closest?.('input,textarea,select,[contenteditable="true"],#editor-change-overlay,.container-picker-menu')) {
       commitCardForm();clearSelection();event.preventDefault();
     }
@@ -1487,7 +1489,7 @@ function handleFrameHoverOut(event) {
 }
 
 function handleFrameDoubleClick(event) {
-  if (mode !== 'edit') return;
+  if (mode !== 'edit' || event.target.closest?.('[contenteditable="true"]')) return;
   const target = pickCanvasTarget(event);
   if (!target || isLocked(target) || target.childElementCount > 0 || target.matches('input,textarea,select,img,svg,video,canvas')) return;
   event.preventDefault();
@@ -1495,10 +1497,19 @@ function handleFrameDoubleClick(event) {
   selectElement(target);
   if(!allowChange(target,{text:target.textContent.trim()}))return;
   const originalText=target.textContent;
+  const doc=target.ownerDocument;
+  const point=doc.caretPositionFromPoint?.(event.clientX,event.clientY);
+  let range=doc.createRange();
+  if(point && target.contains(point.offsetNode)) {
+    range.setStart(point.offsetNode,point.offset);
+  } else {
+    const hit=doc.caretRangeFromPoint?.(event.clientX,event.clientY);
+    if(hit && target.contains(hit.startContainer))range=hit;
+    else {range.selectNodeContents(target);range.collapse(false);}
+  }
+  range.collapse(true);
   target.contentEditable = 'true';
   target.focus();
-  const range = frameDocument().createRange();
-  range.selectNodeContents(target);
   const selection = frame.contentWindow.getSelection();
   selection.removeAllRanges();
   selection.addRange(range);
@@ -1509,15 +1520,17 @@ function handleFrameDoubleClick(event) {
     target.textContent=originalText;
     commitElementChange(target, { text });
     target.removeEventListener('blur', finish);
+    target.removeEventListener('keydown', onKeyDown);
   };
-  target.addEventListener('blur', finish);
-  target.addEventListener('keydown', keyboardEvent => {
+  const onKeyDown = keyboardEvent => {
     if (keyboardEvent.key === 'Enter' && !keyboardEvent.shiftKey) {
       keyboardEvent.preventDefault();
       target.blur();
     }
     if (keyboardEvent.key === 'Escape') reloadFrame();
-  }, { once:false });
+  };
+  target.addEventListener('blur', finish);
+  target.addEventListener('keydown', onKeyDown);
 }
 
 function handleDragStart(event) {
@@ -1700,7 +1713,7 @@ function updateSelectedStyle(styles) {
 function updateTextToolbar() {
   const toolbar=document.getElementById('text-toolbar');
   const visible=mode==='edit' && selectedElements.size===1 && selectedElement?.isConnected && !isLocked(selectedElement)
-    && isTextToolbarTarget(selectedElement)
+    && !editorMain.classList.contains('ai-open') && isTextToolbarTarget(selectedElement)
 ;
   toolbar.hidden=!visible;
   if(!visible)return;
@@ -1826,7 +1839,11 @@ function moveSelected(offset) {
 }
 
 frame.addEventListener('load', setupFrame);
-helpToggle.addEventListener('click', () => setHelpOpen(helpToggle.getAttribute('aria-expanded') !== 'true'));
+helpToggle.addEventListener('click', () => {
+  if(aiBusy)return;
+  const switching=aiDialog.open;if(switching)aiDialog.close();
+  setHelpOpen(switching || helpToggle.getAttribute('aria-expanded') !== 'true');
+});
 
 document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
   commitCardForm();
@@ -1990,7 +2007,7 @@ function sourceModal(title) {
 }
 document.getElementById('source-dialog-close').onclick=()=>{if(!sourceBusy)sourceDialog.close();};
 sourceDialog.addEventListener('cancel',event=>{if(sourceBusy)event.preventDefault();});
-async function saveToSource(choices={},checkedRevision=null) {
+async function saveToSource(choices={},checkedRevision=null,{autoAI=true}={}) {
   if(sourceBusy)return false;
   sourceModal('保存到源码');sourceBusy=true;
   try {
@@ -2012,7 +2029,7 @@ async function saveToSource(choices={},checkedRevision=null) {
       }
       sourceConfirm.hidden=false;sourceConfirm.textContent='按以上选择保存';sourceConfirm.disabled=true;
       sourceConflicts.onchange=()=>{sourceConfirm.disabled=[...sourceConflicts.querySelectorAll('select')].some(select=>!select.value);};
-      sourceConfirm.onclick=()=>saveToSource({...choices,...Object.fromEntries([...sourceConflicts.querySelectorAll('select')].map(select=>[select.dataset.conflict,select.value]))},current.revision);
+      sourceConfirm.onclick=()=>saveToSource({...choices,...Object.fromEntries([...sourceConflicts.querySelectorAll('select')].map(select=>[select.dataset.conflict,select.value]))},current.revision,{autoAI});
       return false;
     }
     if (result.unsupported.length) {
@@ -2027,7 +2044,7 @@ async function saveToSource(choices={},checkedRevision=null) {
     const message=pendingCount?`部分保存到 ${savedPath}；${pendingCount} 项未写入源码（AI 待办），暂不可交付`:`已写入本地文件 ${savedPath}，历史版本已备份`;
     rememberSource(saved);clearSelection();persistState(message,{dirty:false});reloadFrame();saveStatus.textContent=message;
     document.getElementById('source-change-banner').hidden=true;sourceDialog.close();showToast(Object.keys(routes.pending).length?'可直接写入的修改已保存，其余已进入 AI 待办':'已写入项目源码');
-    if(Object.keys(routes.pending).length)setTimeout(()=>openAI(true),0);
+    if(autoAI && Object.keys(routes.pending).length)setTimeout(()=>openAI(true),0);
     return pendingCount===0;
   }catch(error){sourceStatus.textContent=`未完成保存：${error.message}。草稿已保留。`;return false;}
   finally{sourceBusy=false;}
@@ -2208,13 +2225,20 @@ function setLayersOpen(open) {
   }
   resizeCanvas();
 }
-document.getElementById('layers-toggle').addEventListener('click',()=>setLayersOpen(!editorMain.classList.contains('layers-open')));
+document.getElementById('layers-toggle').addEventListener('click',()=>{
+  if(aiBusy)return;
+  const switching=aiDialog.open;if(switching)aiDialog.close();
+  const open=switching || !editorMain.classList.contains('layers-open');
+  if(open)setStructureTab('insert');
+  setLayersOpen(open);
+});
 helpToggle.addEventListener('click',()=>{if(editorMain.classList.contains('help-open'))setLayersOpen(false);});
-document.querySelectorAll('[data-structure-tab]').forEach(button=>button.addEventListener('click',()=>{
-  document.querySelectorAll('[data-structure-tab]').forEach(item=>item.classList.toggle('active',item===button));
-  document.getElementById('layers-panel').hidden=button.dataset.structureTab!=='layers';
-  document.getElementById('insert-panel').hidden=button.dataset.structureTab!=='insert';
-}));
+function setStructureTab(tab) {
+  document.querySelectorAll('[data-structure-tab]').forEach(item=>item.classList.toggle('active',item.dataset.structureTab===tab));
+  document.getElementById('layers-panel').hidden=tab!=='layers';
+  document.getElementById('insert-panel').hidden=tab!=='insert';
+}
+document.querySelectorAll('[data-structure-tab]').forEach(button=>button.addEventListener('click',()=>setStructureTab(button.dataset.structureTab)));
 layerSearch.addEventListener('input',()=>renderLayers());
 function scheduleLayers() {
   clearTimeout(layerRenderTimer);
@@ -2724,13 +2748,36 @@ function routePendingEdits(currentDocument=null) {
   renderPendingHints(Object.keys(routes.pending).length);
   return routes;
 }
-const aiDialog=document.getElementById('ai-dialog'),aiStatus=document.getElementById('ai-status'),aiApply=document.getElementById('ai-apply');
-let aiProposal=null,aiFingerprint='',aiBusy=false;
-function pendingFingerprint(){return JSON.stringify(state.patches);}
+const aiDialog=document.getElementById('ai-dialog'),aiStatus=document.getElementById('ai-status');
+let aiProposal=null,aiFingerprint='',aiBusy=false,aiRequest='';
+const aiChatInput=document.getElementById('ai-chat-input'),aiChatSend=document.getElementById('ai-chat-send');
+const aiChat=createAIChat({input:aiChatInput,log:document.getElementById('ai-chat-log'),storageKey:`${STORAGE_KEY}-ai-chat`});
+const aiAttachments=createAIAttachments({
+  getSelected:selectedList,getDocument:frameDocument,
+  contextFor(element){
+    const copy=element.cloneNode(true);for(const node of [copy,...copy.querySelectorAll('*')]){for(const name of ['data-ve-selector','data-ve-parent-selector','data-ve-reorderable','draggable','contenteditable'])node.removeAttribute(name);for(const name of [...node.classList])if(name.startsWith('ve-'))node.classList.remove(name);}
+    const rect=element.getBoundingClientRect();return {selector:selectorFor(element),label:elementLabel(element).slice(0,300),html:copy.outerHTML.slice(0,6000),rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}};
+  },
+  onChange(){updateAIChatControls();if(aiProposal){aiStatus.textContent='截图或选区已变化，请重新生成并验证。';}},
+  onError(message){aiStatus.textContent=message;},
+  onRegionStart(){cancelMovement();cancelBoxSelection();clearHover();showToast('在画布中拖动框选目标区域，按 Esc 取消');},
+});
+frame.addEventListener('load',()=>aiAttachments.cancelRegion());
+function pendingFingerprint(){return JSON.stringify([state.patches,aiChat.value(),aiAttachments.fingerprint()]);}
+function updateAIChatControls(){aiChatSend.disabled=aiBusy || aiAttachments.reading() || !aiChat.value() || !projectReady;}
+aiChatInput.addEventListener('input',()=>{updateAIChatControls();if(aiProposal){aiStatus.textContent='修改要求已变化，请重新生成并验证。';}});
+aiChatSend.onclick=()=>generateAI();
+aiChatInput.addEventListener('keydown',event=>{if(event.key==='Enter' && (event.metaKey || event.ctrlKey) && !event.isComposing){event.preventDefault();if(!aiChatSend.disabled)void generateAI();}});
+aiDialog.addEventListener('cancel',event=>{if(aiBusy)event.preventDefault();});
+aiDialog.addEventListener('close',()=>{aiAttachments.cancelRegion();editorMain.classList.remove('ai-open');document.getElementById('ai-chat-button').setAttribute('aria-expanded','false');resizeCanvas();updateTextToolbar();});
+updateAIChatControls();
 async function openAI(auto=false) {
-  if(!aiDialog.open)aiDialog.showModal();
+  editorMain.classList.add('ai-open');
+  document.getElementById('ai-chat-button').setAttribute('aria-expanded','true');
+  if(!aiDialog.open)aiDialog.show();
+  resizeCanvas();updateTextToolbar();
   const pending=routePendingEdits().pending,list=document.getElementById('ai-pending');list.replaceChildren();
-  const count=Object.keys(pending).length;document.getElementById('ai-pending-count').textContent=count;document.getElementById('ai-empty').hidden=!!count;document.getElementById('ai-generate').disabled=!count;
+  const count=Object.keys(pending).length;document.getElementById('ai-pending-count').textContent=count;document.getElementById('ai-empty').hidden=!!count;document.getElementById('ai-queue').open=!!count;document.getElementById('ai-generate').disabled=aiBusy || !count;updateAIChatControls();
   for(const patch of Object.values(pending)) {const row=document.createElement('p');row.textContent=(patch.ai.context.label||patch.selector)+'：'+Object.values(patch.ai.fields).join('；');const details=document.createElement('details'),title=document.createElement('summary'),values=document.createElement('pre');title.textContent='查看修改要求';values.textContent=JSON.stringify(Object.fromEntries(Object.entries(patch).filter(([name])=>!['ai','selector'].includes(name))),null,2);details.append(title,values);list.append(row,details);}
   try{
     const settings=await sourceRequest('/api/ai/settings');
@@ -2739,34 +2786,44 @@ async function openAI(auto=false) {
     document.getElementById('ai-http-note').hidden=!document.getElementById('ai-endpoint').value.startsWith('http:');
     document.getElementById('ai-settings').open=!settings.ready;
     const connection=document.getElementById('ai-connection');connection.textContent=settings.ready?'已配置':settings.configured?'待设置密钥':'未配置';connection.dataset.ready=String(settings.ready);
-    aiStatus.textContent=Object.keys(pending).length?settings.ready?(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'?'修改已进入待办，生成前会先保存项目。':'待办已保存，可以生成源码修改。'):'请先配置模型接口和 API 密钥。':'还没有需要 AI 写入的修改，点击「去编辑组件」开始。';
+    aiStatus.textContent=Object.keys(pending).length?settings.ready?(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'?'修改已进入待办，生成前会先保存项目。':'待办已保存，可以生成源码修改。'):'请先配置模型接口和 API 密钥。':'自动备份并保存 · 完成后刷新画布';
     if(settings.ready)loadAIModels();
-    if(auto && settings.ready)await generateAI();
+    if(auto && settings.ready)await generateAI('');
   }catch(error){aiStatus.textContent=error.message;}
 }
 document.getElementById('ai-button').onclick=()=>openAI();
-document.getElementById('ai-close').onclick=()=>aiDialog.close();
+document.getElementById('ai-chat-button').onclick=async()=>{await openAI();aiChatInput.focus();};
+document.getElementById('ai-close').onclick=()=>{if(!aiBusy)aiDialog.close();};
 document.getElementById('ai-settings-save').onclick=async()=>{
   try{const value=await sourceRequest('/api/ai/settings',{endpoint:document.getElementById('ai-endpoint').value,model:document.getElementById('ai-model').value,apiKeyEnv:document.getElementById('ai-key-env').value,apiKey:document.getElementById('ai-api-key').value});document.getElementById('ai-key-env').value=value.apiKeyEnv||'';if(value.hasAPIKey){document.getElementById('ai-api-key').value='';document.getElementById('ai-api-key').placeholder='密钥已保存，留空继续使用';}const connection=document.getElementById('ai-connection');connection.textContent=value.ready?'已配置':'待设置密钥';connection.dataset.ready=String(value.ready);aiStatus.textContent=value.ready?'接口设置已保存。':'设置已保存；请设置密钥环境变量并重启服务。';}catch(error){aiStatus.textContent=error.message;}
 };
-async function generateAI() {
-  if(aiBusy)return;
-  if(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'){aiStatus.textContent='正在保存普通修改并保留 AI 待办…';await saveToSource();return;}
-  aiBusy=true;aiApply.disabled=true;aiProposal=null;aiFingerprint=pendingFingerprint();
+async function generateAI(request=aiChat.value()) {
+  if(aiBusy || aiAttachments.reading() || !projectReady)return;
+  const attachments=request?aiAttachments.payload():{images:[],selection:null};
+  commitCardForm();
+  if(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'){
+    aiStatus.textContent='正在保存普通修改并保留 AI 待办…';
+    await saveToSource({},null,{autoAI:false});
+    if(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'){aiStatus.textContent='普通修改尚未保存，请处理保存冲突或错误后重试。';return;}
+  }
+  aiBusy=true;aiProposal=null;aiRequest=request;aiFingerprint=pendingFingerprint();
+  const history=aiChat.history();if(request)aiChat.add('user',request+(attachments.selection?'\n引用区域：'+(attachments.selection.elements.map(item=>item.label).join('、')||'框选区域'):'')+(attachments.images.length?'\n截图：'+attachments.images.map(image=>image.name).join('、'):''));
+  aiChatInput.disabled=true;aiAttachments.setBusy(true);document.getElementById('ai-close').disabled=true;updateAIChatControls();
   const button=document.getElementById('ai-generate');button.disabled=true;aiStatus.textContent='模型正在修改最新源码…';
-  let baselineFrame=null;
+  let baselineFrame=null,previewFrame=null;
   try {
-    const proposal=await sourceRequest('/api/ai/generate',{});
+    const proposal=await sourceRequest('/api/ai/generate',{request,history:request?history:[],...attachments});
     if(aiFingerprint!==pendingFingerprint())throw new Error('生成期间草稿发生变化，请保存后重新生成');
-    aiProposal=proposal;aiApply.hidden=false;document.getElementById('ai-results').hidden=false;
+    aiProposal=proposal;document.getElementById('ai-results').hidden=false;
     const diff=document.getElementById('ai-diff');diff.replaceChildren();
     for(const change of proposal.changes){const details=document.createElement('details'),title=document.createElement('summary'),before=document.createElement('pre'),after=document.createElement('pre');title.textContent=change.path+' · 查看修改前后';before.textContent='修改前\n'+change.before;after.textContent='修改后\n'+change.after;details.append(title,before,after);diff.append(details);}
     aiStatus.textContent='正在检查修改后的页面效果…';
-    const preview=document.getElementById('ai-preview');preview.hidden=false;
+    const preview=document.createElement('iframe');previewFrame=preview;preview.dataset.aiVerification='true';preview.setAttribute('aria-hidden','true');preview.tabIndex=-1;
+    Object.assign(preview.style,{position:'fixed',left:'-20000px',top:'0',width:`${frame.clientWidth}px`,height:`${frame.clientHeight}px`,border:'0',pointerEvents:'none'});
     if(!proposal.baselineUrl)throw new Error('服务未提供原页面验证基线，请重启编辑器服务后重试');
     baselineFrame=document.createElement('iframe');baselineFrame.dataset.aiBaseline='true';baselineFrame.setAttribute('aria-hidden','true');baselineFrame.tabIndex=-1;
-    Object.assign(baselineFrame.style,{position:'fixed',left:'-10000px',top:'0',width:`${preview.clientWidth}px`,height:`${preview.clientHeight}px`,border:'0',pointerEvents:'none'});
-    await Promise.all([loadAIFrame(preview,proposal.previewUrl),loadAIFrame(baselineFrame,proposal.baselineUrl,document.body)]);
+    Object.assign(baselineFrame.style,{position:'fixed',left:'-10000px',top:'0',width:`${frame.clientWidth}px`,height:`${frame.clientHeight}px`,border:'0',pointerEvents:'none'});
+    await Promise.all([loadAIFrame(preview,proposal.previewUrl,document.body),loadAIFrame(baselineFrame,proposal.baselineUrl,document.body)]);
     let failures=[],stable=0;
     for(let attempt=0;attempt<20;attempt++){await new Promise(resolve=>setTimeout(resolve,250));failures=await verifyAIPage(preview.contentDocument,proposal.pending);stable=failures.length?0:stable+1;if(stable>=4)break;}
     if(stable<4 && !failures.length)failures.push('修改后的页面效果尚未稳定，请重试');
@@ -2774,20 +2831,27 @@ async function generateAI() {
     if(!Array.isArray(previewErrors) || !Array.isArray(baselineErrors))throw new Error('无法读取预览或原页面的错误基线，请重新生成');
     const errorChanges=compareAIErrors(previewErrors,baselineErrors);
     for(const error of errorChanges.introduced.slice(0,5))failures.push('新增脚本或资源错误：'+(typeof error==='string'?error:error.message+(error.url?`（${error.url}）`:'')));
+    const duplicateCounts=doc=>{const counts=new Map();for(const element of doc.querySelectorAll('[id]'))if(element.id)counts.set(element.id,(counts.get(element.id)||0)+1);return counts;};
+    const oldIds=duplicateCounts(baselineFrame.contentDocument);
+    for(const [id,count] of duplicateCounts(preview.contentDocument))if(count>1 && count>(oldIds.get(id)||0))failures.push('新增重复 ID：'+id);
     if(failures.length)throw new Error('页面效果未通过验证：'+failures.join('；'));
-    aiStatus.textContent=(proposal.explanation||'模型修改已生成')+'。页面效果验证通过，请查看差异和预览后确认写入。'+(errorChanges.inherited.length?`原页面已有 ${errorChanges.inherited.length} 项脚本或资源问题，本次修改未增加这些问题。`:'');aiApply.disabled=false;
-  }catch(error){aiStatus.textContent=error.message+'。已保存的修改不受影响，AI 待办仍保留。';}
-  finally{baselineFrame?.remove();aiBusy=false;button.disabled=false;}
+    aiStatus.textContent='正在保存修改并刷新主界面…';
+    await applyAIProposal();
+    if(errorChanges.inherited.length)aiStatus.textContent+=`原页面已有 ${errorChanges.inherited.length} 项脚本或资源问题，本次未增加。`;
+  }catch(error){aiStatus.textContent=error.message+'。已保存的修改不受影响，修改要求与 AI 待办仍保留。';if(request)aiChat.add('assistant','生成失败，未写入：'+error.message);}
+  finally{baselineFrame?.remove();previewFrame?.remove();aiBusy=false;aiChatInput.disabled=false;aiAttachments.setBusy(false);document.getElementById('ai-close').disabled=false;button.disabled=!Object.keys(routePendingEdits().pending).length;updateAIChatControls();}
 }
-document.getElementById('ai-generate').onclick=generateAI;
-aiApply.onclick=async()=>{
-  if(!aiProposal || aiBusy)return;
-  if(aiFingerprint!==pendingFingerprint()){aiApply.disabled=true;aiStatus.textContent='草稿已变化，请保存并重新生成。';return;}
-  aiBusy=true;aiApply.disabled=true;
-  try{const saved=await sourceRequest('/api/ai/apply',{id:aiProposal.id,verified:true});state=createEditorState({});rememberSource(saved);clearSelection();persistState('AI 修改已写入源码，历史版本已备份',{dirty:false});reloadFrame();aiDialog.close();aiProposal=null;showToast('AI 修改已写入项目源码');}
-  catch(error){aiStatus.textContent=error.message+'。AI 待办仍保留。';}
-  finally{aiBusy=false;}
-};
+document.getElementById('ai-generate').onclick=()=>generateAI();
+async function applyAIProposal() {
+  if(!aiProposal || aiFingerprint!==pendingFingerprint())throw new Error('修改要求或草稿已变化，本次未写入，请重新发送');
+  const explanation=aiProposal.explanation||aiRequest||'待办修改';
+  const saved=await sourceRequest('/api/ai/apply',{id:aiProposal.id,verified:true});
+  state=createEditorState({});rememberSource(saved);clearSelection();persistState('AI 修改已写入源码，历史版本已备份',{dirty:false});reloadFrame();aiProposal=null;
+  if(aiRequest){aiChat.add('assistant','已写入源码：'+explanation);aiChat.clearInput();aiAttachments.clear();}
+  document.getElementById('ai-queue').open=false;document.getElementById('ai-pending-count').textContent='0';document.getElementById('ai-pending').replaceChildren();document.getElementById('ai-empty').hidden=false;
+  aiStatus.textContent='已修改并保存：'+explanation+'。原源码已自动备份，可通过“恢复历史版本”找回。';showToast('AI 已修改并保存，主界面已刷新');
+}
+
 
 
 const aiTestButton=document.getElementById('ai-test'),aiTestResult=document.getElementById('ai-test-result');

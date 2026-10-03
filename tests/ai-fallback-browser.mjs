@@ -22,7 +22,9 @@ try{
  assert.match(await page.locator('#saveability-summary').textContent(),/待 AI 写入：0 项/);
  assert.equal(await page.locator('#ai-pending-count').textContent(),'0');
  assert.match(await page.locator('#ai-empty').textContent(),/还没有需要 AI 写入的修改/);
- assert.equal(await page.locator('#ai-start-edit').isVisible(),true);
+ assert.equal(await page.locator('#ai-queue').evaluate(el=>el.open),false,'没有待办时默认收起');
+ assert.equal(await page.locator('#ai-generate').isVisible(),false,'没有待办时不展示处理按钮');
+ await page.locator('#ai-queue > summary').click();assert.equal(await page.locator('#ai-start-edit').isVisible(),true,'展开后仍可进入组件编辑');
  await page.locator('#ai-settings > summary').click();
  await page.waitForFunction(()=>document.querySelector('#ai-models-status').textContent.includes('2 个模型'));
  await page.locator('#ai-model-toggle').click();await page.locator('#ai-model-search').fill('second');assert.equal(await page.locator('#ai-model-options [role=option]').count(),1);await page.locator('#ai-model-options [role=option]').click();assert.equal(await page.locator('#ai-model').inputValue(),'second-model');
@@ -57,16 +59,15 @@ try{
  const config=await (await fetch(base+`/api/projects/current?project=${p.id}&entry=index.html`)).json();
  const patches=JSON.parse(await readFile(config.editsFile,'utf8')).patches;assert.equal(Object.values(patches).find(v=>v.selector==='#rewritten').text,'AI text');assert.equal(Object.values(patches).find(v=>v.selector==='#rewritten').styles,undefined);
  await page.reload();await f.locator('body[data-ve-editor-ready=true]').waitFor();assert.equal(await f.locator('#rewritten').textContent(),'AI text');assert.equal(await f.locator('#live').textContent(),'AI live');
- modelMode='wrong';await page.locator('#ai-button').click();await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('未通过验证'));assert.equal(await page.locator('#ai-apply').isDisabled(),true);assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
- modelMode='new-error';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('AI regression'));assert.equal(await page.locator('#ai-apply').isDisabled(),true);
- modelMode='new-resource';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('missing-ai-image.png'));assert.equal(await page.locator('#ai-apply').isDisabled(),true);
- modelMode='good';await page.locator('#ai-generate').click();await page.locator('#ai-apply').waitFor({state:'visible'});
- await page.waitForFunction(()=>!document.querySelector('#ai-apply').disabled);
+ modelMode='wrong';await page.locator('#ai-button').click();await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('未通过验证'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
+ modelMode='new-error';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('AI regression'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
+ modelMode='new-resource';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('missing-ai-image.png'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
+ modelMode='good';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('已修改并保存'));
  assert.match(await page.locator('#ai-status').textContent(),/原页面已有/);
  assert.equal(await page.locator('iframe[data-ai-baseline]').count(),0);
  assert.match(task.files['index.html'],/Direct saved/);assert.match(task.files['index.html'],/rgb\(18, 52, 86\)/);
- await page.locator('#ai-apply').click();await page.waitForFunction(()=>!document.querySelector('#ai-dialog').open);
+ assert.equal(await page.locator('#ai-apply').count(),0);
  assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,{});
  const standalone=await browser.newPage();await standalone.goto(`${base}/project/${p.id}/index.html`);assert.equal(await standalone.locator('#rewritten').textContent(),'AI text');assert.equal(await standalone.locator('#live').textContent(),'AI live');assert.equal(await standalone.locator('#title').textContent(),'Direct saved');
- assert.deepEqual(errors,[]);console.log('PASS: direct styles/static edits save first; model failure retains pending; reload previews; latest source sent; fresh page verifies model; confirmed code write clears pending');
+ assert.deepEqual(errors,[]);console.log('PASS: direct styles/static edits save first; model failure retains pending; reload previews; latest source sent; fresh page verifies model; automatic code write clears pending');
 }finally{delete process.env.VE_UI_MODEL_KEY;await browser.close();await new Promise(r=>server.close(r));await new Promise(r=>model.close(r));await rm(temp,{recursive:true,force:true});}

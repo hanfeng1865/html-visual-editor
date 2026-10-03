@@ -1,3 +1,5 @@
+import {createAIService} from './ai-service.mjs';
+import {installAIErrorMonitor} from './ai-editor.mjs';
 import { readAnnotations, writeAnnotations } from './change-annotations-store.mjs';
 import {ensureSourceOrigin,readSourceState,saveSource,restoreSource,listSourceVersions,readSourceVersion} from './source-store.mjs';
 import { createReadStream, readFileSync } from 'node:fs';
@@ -59,6 +61,7 @@ try {
 }
 
 export function createDevServer({ rootDir = configuration.prototypeRoot || editorDirectory, editorDir = editorDirectory } = {}) {
+  const ai=createAIService(editorDir);
   const projectRoot = resolve(rootDir);
   const workspaces = createWorkspaceManager(projectRoot, { registryDir: join(editorDir, '.editor-workspaces') });
 
@@ -73,6 +76,31 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
       if (request.method === 'POST') {
         if (request.headers.origin && request.headers.origin !== `http://${request.headers.host}`) return json(response, 403, { error:'仅允许本地编辑器发起操作' });
         if (!(request.headers['content-type'] || '').startsWith('application/json')) return json(response, 415, { error:'需要 JSON 请求' });
+      }
+      if(url.pathname==='/api/ai/models' && request.method==='POST')return json(response,200,await ai.listModels(await readJsonBody(request)));
+      if(url.pathname==='/api/ai/test' && request.method==='POST')return json(response,200,await ai.testConnection(await readJsonBody(request)));
+      if(url.pathname==='/api/ai/settings' && ['GET','POST'].includes(request.method))return json(response,200,await ai.settings(request.method==='POST'?await readJsonBody(request):undefined));
+      if(['/api/ai/generate','/api/ai/apply'].includes(url.pathname) && request.method==='POST') {
+        const project=await workspaces.describe(url.searchParams.get('project')||'builtin',url.searchParams.get('entry')||undefined);
+        const body=await readJsonBody(request);
+        return json(response,200,url.pathname.endsWith('generate')?await ai.generate(project):await ai.apply(project,body));
+      }
+      if(url.pathname.startsWith('/ai-preview/') || url.pathname.startsWith('/ai-baseline/')) {
+        const [, ,id,...parts]=url.pathname.split('/');const value=ai.proposal(id);
+        const path=decodeURIComponent(parts.join('/')),file=await insideProject(value.project.root,path);
+        const baseline=url.pathname.startsWith('/ai-baseline/');
+        const sourceFiles=baseline?value.originalFiles:value.allFiles;
+        const extension=extname(file).toLowerCase(),prefix=`/${baseline?'ai-baseline':'ai-preview'}/${id}/`;
+        let content=Object.hasOwn(sourceFiles,path)?sourceFiles[path]:await readFile(file);
+        if(extension==='.html') {
+          content=scopeRootUrls(String(content),prefix);
+          const monitor=`<script>(${installAIErrorMonitor.toString()})();</script>`;
+          content=content.replace(/<head[^>]*>/i,match=>match+monitor);
+          if(!/<head[\s>]/i.test(content))content=monitor+content;
+        }
+        if(extension==='.css')content=scopeRootUrls(String(content),prefix,true);
+        response.writeHead(200,{'content-type':mimeTypes[extension]||'application/octet-stream','cache-control':'no-store'});
+        return response.end(content);
       }
       const workspaceId = url.searchParams.get('project') || 'builtin';
       const entry = url.searchParams.get('entry') || undefined;
@@ -111,8 +139,9 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
         return json(response,405,{error:'不支持此操作'});
       }
       if (url.pathname === '/api/projects/export' && request.method === 'POST') {
-        const value = validateVisualEdits(await readJsonBody(request));
-        const zip = await exportProjectZip(workspaces, workspaceId, entry, value.patches);
+        const payload = await readJsonBody(request);
+        const value = validateVisualEdits(payload);
+        const zip = await exportProjectZip(workspaces, workspaceId, entry, value.patches, {sourceOnly:payload.sourceOnly === true});
         response.writeHead(200, {'content-type':'application/zip','content-disposition':'attachment; filename="html-project.zip"'});
         return response.end(zip);
       }

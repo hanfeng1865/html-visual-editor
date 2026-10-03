@@ -71,15 +71,32 @@ async function writeTransaction(project,files,patches) {
     throw error;
   }
 }
-export async function saveSource(project,editorDir,{revision,html,draft}) {
+export async function saveSource(project,editorDir,{revision,html,draft,pending={version:1,patches:{}}}) {
   return exclusive(project.root,async()=>{
     validateVisualEdits(draft);
+    validateVisualEdits(pending);
     if(typeof html!=='string' || !html.trim() || Buffer.byteLength(html)>10*1024*1024)throw fail('HTML 内容无效或超过 10MB',400);
     const current=await ensureSourceOrigin(project,editorDir);
     if(current.revision!==revision)throw fail('源码又发生变化，请重新检查后保存');
     await snapshot(project,current,draft.patches,'before-save');
     if((await readSourceState(project,editorDir)).revision!==revision)throw fail('备份期间源码发生变化，未写入任何修改');
-    await writeTransaction(project,{[project.entry]:html},{});
+    await writeTransaction(project,{[project.entry]:html},pending.patches);
+    const result=await readSourceState(project,editorDir);await snapshot(project,result,pending.patches,'saved');return result;
+  });
+}
+
+export async function applyAISource(project,editorDir,{revision,files,draft}) {
+  return exclusive(project.root,async()=>{
+    validateVisualEdits(draft);
+    const current=await ensureSourceOrigin(project,editorDir);
+    if(current.revision!==revision)throw fail('生成后源码或待办发生变化，请重新生成 AI 修改');
+    if(!files || typeof files!=='object' || Array.isArray(files) || !Object.keys(files).length)throw fail('AI 未返回源码修改',400);
+    for(const [entry,value] of Object.entries(files)) {
+      if(!Object.hasOwn(current.files,entry) || typeof value!=='string' || !value.trim())throw fail('AI 返回了项目范围外的文件或无效源码',400);
+    }
+    await snapshot(project,current,draft.patches,'before-save');
+    if((await readSourceState(project,editorDir)).revision!==revision)throw fail('备份期间源码发生变化，未写入 AI 修改');
+    await writeTransaction(project,files,{});
     const result=await readSourceState(project,editorDir);await snapshot(project,result,{},'saved');return result;
   });
 }

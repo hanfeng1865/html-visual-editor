@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>HTML 可视化编辑器</title>
-  <link rel="stylesheet" href="editor.css?v=6" />
+  <link rel="stylesheet" href="editor.css?v=8" />
 </head>
 <body>
   <div class="editor-shell">
@@ -28,15 +28,16 @@
         <button id="reload-button" type="button" title="重新读取当前 HTML 与本地资源">刷新代码</button>
         <button id="editor-changes-toggle" type="button" aria-pressed="false" title="显示或隐藏手动框选的标记">显示手动标记</button>
         <button id="editor-box-toggle" type="button" aria-pressed="false" title="在当前画布拖动框选并保存手动改动点">框选改动</button>
-        <button id="save-button" class="primary" type="button">保存到项目</button>
+        <button id="ai-button" type="button">AI 待办</button>
+        <button id="save-button" class="primary" type="button" title="写入项目中的本地 HTML 文件（⌘/Ctrl+S），未完成的 AI 待办不算源码已保存">保存到项目</button>
         <button id="view-first-button" type="button">查看初版</button>
         <button id="compare-button" type="button">上下对比</button>
         <button id="history-button" type="button">恢复历史版本</button>
         <button id="export-menu-button" type="button">导出 ▾</button>
         <div class="export-menu" id="export-menu" hidden>
-          <button id="export-json-button" type="button">导出调整 JSON</button>
+          <button id="export-json-button" type="button" hidden>导出调整 JSON</button>
           <button id="export-html-button" type="button">导出可运行 HTML</button>
-          <button id="import-button" type="button">导入调整 JSON</button>
+          <button id="import-button" type="button" hidden>导入调整 JSON</button>
           <button id="reset-button" class="danger" type="button">清空全部调整</button>
         </div>
         <input id="import-file" type="file" accept="application/json,.json" hidden />
@@ -51,6 +52,7 @@
       <span id="project-path" title="项目文件夹"></span><span class="source-preserved">保存前自动备份</span>
     </div>
     <div id="project-error" role="alert" hidden></div>
+    <div id="saveability-summary" role="status" aria-live="polite">正在检查页面的保存方式…</div>
     <main class="editor-main">
       <aside class="editor-help" aria-label="图层与组件">
         <button id="layers-toggle" class="editor-help-toggle" type="button" aria-expanded="false" title="展开图层与组件"><span class="help-toggle-icon">▤</span><span class="help-toggle-label">图层与组件</span><span class="help-toggle-arrow">›</span></button>
@@ -69,6 +71,7 @@
           <ol>
             <li><b>指到文字选文字，指到图标选图标</b>；点击卡片空白处选整卡，双击文字直接修改。</li>
             <li><b>Shift + 单击</b>多选，统一修改样式。</li>
+            <li>点击画布空白处或按 <b>Esc</b> 取消选中；也可点击右侧选择栏的 ×。</li>
             <li>点击右侧层级，选择卡片内部的文字或容器。</li>
             <li>按住选中模块并拖动，可在同一容器内排序。</li>
           </ol>
@@ -76,9 +79,33 @@
             <b>AI 协作方式</b>
             <p>在原文件夹中修改 HTML/CSS 后点击“刷新代码”。手动调整先作为浏览器草稿自动保存，确认后点击“保存到项目”写入本地文件。</p>
           </div>
+          <div class="help-card">
+            <b>初版生成提示词</b>
+            <p>第一次让 AI 生成项目时，将下面这段加入你的需求提示词，方便后续在本编辑器中修改并直接保存源码。</p>
+            <details class="help-generation-prompt">
+              <summary>展开完整提示词</summary>
+              <p>点击文本框后按 ⌘/Ctrl+A 全选，再按 ⌘/Ctrl+C 复制。</p>
+              <textarea aria-label="初版生成提示词" readonly rows="16" spellcheck="false">请生成一个兼容本地 HTML 可视化编辑器、方便后续直接保存源码的项目。
+
+代码要求：
+1. 使用静态 HTML、CSS 和原生 JavaScript，不引入需要构建才能运行的框架。
+2. 页面主体结构直接写在 HTML 中，包括标题、卡片、按钮、表格、弹窗和预先定义的内容区域，不要通过 JS 拼接生成整个页面。
+3. 给需要编辑的容器和元素设置唯一、固定、语义明确的 id 或 data-ve-node。不要使用随机标识、时间戳或数组下标作为标识。
+4. 标题、数值、单位、说明文字分别使用独立元素，便于单独编辑。
+5. JavaScript 主要负责事件绑定、显示隐藏、筛选和交互，不要覆盖静态文案，不要反复替换可编辑容器的 innerHTML。
+6. 确实需要动态更新的部分尽量缩小到具体数值或列表区域，不要让整个卡片或整个页面变成动态生成区域。明确区分演示数据与真实接口数据。
+7. CSS 使用清晰的类名，尽量不使用 !important，不要用 JS 持续写入样式覆盖可视化修改。
+8. 图片、图标、字体及其他依赖尽量放在项目本地，使用相对路径，避免关键功能依赖远程 CDN。
+9. HTML、CSS、JS 按职责组织；不要把大量第三方库内联进 HTML。
+10. 交付前检查：没有重复 ID、没有未定义变量、没有资源加载失败；刷新和重复操作交互后，静态文案及可编辑结构不会被重新覆盖。
+
+验收要求：
+在可视化编辑器中修改一个标题、一处样式、一个数值和一个组件位置，保存后关闭编辑器，通过普通本地 HTTP 服务打开原项目，确认修改仍然存在。</textarea>
+            </details>
+          </div>
           <div class="help-card subtle">
             <b>当前选择</b>
-            <p id="selection-path">尚未选择元素</p><p>点击文字或图标即可直接选中；点卡片空白处选整卡。</p>
+            <p id="selection-path">尚未选择元素</p><p>点击文字或图标即可直接选中；点卡片空白处选整卡。按住 Alt 单击可切换重叠元素与父级。</p>
           </div>
         </div>
       </aside>
@@ -126,11 +153,20 @@
       </div>
 
       <aside class="inspector">
+        <div id="inspector-empty">
+          <strong>选择一个元素开始编辑</strong>
+          <p>点击画布中的文字、图片或组件，在这里调整属性。</p>
+        </div>
         <div id="inspector-fields" hidden>
           <div class="inspector-head">
             <div><span>正在编辑</span><b id="selected-name">元素</b></div>
-            <button id="clear-selection" type="button" title="取消选择">×</button>
+            <button id="clear-selection" type="button" title="取消选择（Esc）" aria-label="取消选择">×</button>
           </div>
+
+          <section class="property-section" id="saveability-section" aria-live="polite">
+            <h3 id="saveability-title">保存方式</h3>
+            <p id="saveability-detail"></p>
+          </section>
 
           <section class="property-section" id="selection-layout-section" hidden>
             <h3>元素对齐与分布</h3>
@@ -207,7 +243,7 @@
             <div class="move-arrows"><span></span><button type="button" data-nudge="up" aria-label="向上微调">↑</button><span></span><button type="button" data-nudge="left" aria-label="向左微调">←</button><button id="reset-offset" type="button" title="归零所选元素偏移" aria-label="偏移归零">·</button><button type="button" data-nudge="right" aria-label="向右微调">→</button><span></span><button type="button" data-nudge="down" aria-label="向下微调">↓</button><span></span></div>
             <div id="movement-offset"></div>
             <div class="quick-actions"><button id="place-on-page" type="button">放到页面自由摆放</button></div>
-            <p class="field-hint">直接拖动可跨容器，绿色边框表示放入位置；按住 ⌘ / Ctrl 拖动可放在页面上自由摆放。蓝色线辅助对齐，Alt 取消吸附。方向键移动 1px，Shift + 方向键移动 10px。换位仅限同级元素。Esc 取消拖动。</p>
+            <p class="field-hint">直接拖动可跨容器，绿色边框表示放入位置；按住 ⌘ / Ctrl 拖动可放在页面上自由摆放。蓝色线辅助对齐，Alt 取消吸附。长按左键滑过组件连续多选，松开后直接拖动整组；Shift 追加选择。方向键移动 1px，Shift + 方向键移动 10px。换位仅限同级元素。Esc 取消拖动。</p>
           </section>
 
 
@@ -231,7 +267,50 @@
     <p id="comparison-status" role="status"></p>
     <div id="comparison-panes"><section><h3 id="comparison-old-label">第一个版本</h3><div class="comparison-viewport"><iframe id="comparison-old" title="历史版本" sandbox="allow-scripts allow-same-origin"></iframe></div></section><section id="comparison-current-pane"><h3>当前效果（包含本页未保存修改）</h3><div class="comparison-viewport"><iframe id="comparison-now" title="当前效果" sandbox="allow-scripts allow-same-origin"></iframe></div></section></div>
   </dialog>
-  <dialog id="source-dialog" aria-labelledby="source-dialog-title">
+  <dialog id="ai-dialog" aria-labelledby="ai-title">
+    <header class="ai-head">
+      <div class="ai-heading"><span class="ai-symbol" aria-hidden="true">✦</span><div><h2 id="ai-title">AI 辅助写入</h2><p>处理无法直接保存的修改</p></div></div>
+      <button id="ai-close" class="ai-icon-button" type="button" aria-label="关闭 AI 写入">×</button>
+    </header>
+    <div class="ai-body">
+      <div class="ai-overview"><span aria-hidden="true">✓</span><p>普通修改直接保存，AI 只处理剩余待办。<br><small>生成后先预览，确认后再写入源码。</small></p></div>
+      <div class="ai-columns">
+        <section class="ai-config-panel">
+          <details id="ai-settings">
+            <summary><span>模型连接</span><span id="ai-connection" class="ai-badge">未配置</span></summary>
+            <div class="ai-form">
+              <label for="ai-endpoint">接口地址<span class="ai-field-hint">兼容 Chat Completions</span></label>
+              <input id="ai-endpoint" type="url" placeholder="https://api.example.com/v1" spellcheck="false">
+              <div class="ai-model-heading"><label for="ai-model">模型名称</label><button id="ai-models-load" type="button">加载模型</button></div>
+              <div id="ai-model-picker" class="ai-model-picker">
+                <input id="ai-model" role="combobox" aria-expanded="false" aria-controls="ai-model-options" aria-autocomplete="list" autocomplete="off" placeholder="选择模型或手动填写" spellcheck="false">
+                <button id="ai-model-toggle" type="button" aria-label="展开模型选项" aria-expanded="false">⌄</button>
+                <div id="ai-model-menu" class="ai-model-menu" hidden>
+                  <input id="ai-model-search" placeholder="搜索模型…" aria-label="搜索模型" autocomplete="off">
+                  <div id="ai-model-options" role="listbox" aria-label="可用模型"></div>
+                </div>
+              </div><p id="ai-models-status" role="status">从接口加载列表，也可手动填写。</p>
+              <label for="ai-api-key">API 密钥</label><input id="ai-api-key" type="password" placeholder="填写供应商提供的 API Key" autocomplete="off" spellcheck="false">
+              <p class="ai-field-note">保存后仅保留在本机配置文件中，不会显示或返回密钥。</p>
+              <details class="ai-advanced"><summary>使用环境变量（可选）</summary><label for="ai-key-env">环境变量名</label><input id="ai-key-env" placeholder="MODEL_API_KEY" spellcheck="false"><p class="ai-field-note">例如 MODEL_API_KEY，填写变量名。设置后需重启服务。</p></details>
+              <p id="ai-http-note" class="ai-field-note" hidden>此地址使用 HTTP，密钥会以明文传输；建议供应商启用 HTTPS。</p>
+              <div class="ai-connection-actions"><button id="ai-settings-save" class="ai-secondary" type="button">保存连接设置</button><button id="ai-test" class="ai-secondary" type="button">测试连接</button></div>
+              <p id="ai-test-result" role="status" hidden></p>
+              <p class="ai-privacy">生成时会将相关源码发送至此接口。</p>
+            </div>
+          </details>
+        </section>
+        <section class="ai-queue-panel">
+          <div class="ai-section-heading"><h3>待处理修改</h3><span id="ai-pending-count" class="ai-count">0</span></div>
+          <div id="ai-empty" class="ai-empty"><span class="ai-empty-icon" aria-hidden="true">✓</span><strong>还没有需要 AI 写入的修改</strong><p id="ai-empty-detail">先进入编辑模式，选中并修改组件；需要 AI 写回的修改会自动显示在这里。</p><button id="ai-start-edit" class="ai-secondary" type="button">去编辑组件</button></div>
+          <div id="ai-pending"></div>
+        </section>
+      </div>
+      <div id="ai-results" hidden><h3 class="ai-results-title">修改预览</h3><div id="ai-diff"></div><iframe id="ai-preview" title="AI 修改效果预览" hidden></iframe></div>
+    </div>
+    <footer class="ai-footer"><p id="ai-status" role="status"></p><div class="ai-actions"><button id="ai-generate" class="ai-primary" type="button" disabled>生成修改并验证</button><button id="ai-apply" class="ai-primary" type="button" disabled hidden>确认写入源码</button></div></footer>
+  </dialog>
+  <dialog id="source-dialog"  aria-labelledby="source-dialog-title">
     <div class="project-dialog-head"><h2 id="source-dialog-title">保存到源码</h2><button id="source-dialog-close" type="button" aria-label="关闭">×</button></div>
     <p id="source-dialog-status" role="status"></p><div id="source-conflicts"></div>
     <button id="source-confirm" class="section-primary" type="button" hidden>按以上选择保存</button>
@@ -256,12 +335,12 @@
       <button id="choose-project-folder" type="button" class="choose-folder-button">选择本机文件夹…</button>
       <label for="project-folder-path">或粘贴文件夹完整路径</label>
       <input id="project-folder-path" type="text" placeholder="/Users/你的名字/Documents/我的原型" autocomplete="off" />
-      <p class="project-note">仅关联，不搬移文件。编辑记录单独保存，原 HTML/CSS 不会自动覆盖。支持普通静态页面；需要构建或后端的项目，请先生成静态页面。</p>
+      <p class="project-note">仅关联，不搬移文件。编辑时自动保留浏览器草稿；点击「保存到项目」或 ⌘/Ctrl+S 才会写入原 HTML，并自动备份。AI 待办确认写入后才能交付完整源码。支持普通静态页面；需要构建或后端的项目，请先生成静态页面。</p>
       <p id="project-open-status" role="status"></p>
       <div class="project-dialog-actions"><button type="submit" id="confirm-open-project">关联并打开</button></div>
     </form>
   </dialog>
   <div class="toast" id="toast" role="status"></div>
-  <script type="module" src="editor.js?v=22"></script>
+  <script type="module" src="editor.js?v=25"></script>
 </body>
 </html>

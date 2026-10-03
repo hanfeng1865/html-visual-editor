@@ -23,5 +23,5 @@ test('dynamic runtime text is not overwritten by saved visual-editor patches', a
   const editor = await readFile(new URL('../editor.js', import.meta.url), 'utf8');
 
   assert.match(engine, /closest\('\[data-ve-dynamic\]'\)/);
-  assert.match(editor, /closest\('\[data-ve-dynamic\]'\)/);
+  assert.match(engine, /patch\.ai\?\.fields\?\.text/);
 });

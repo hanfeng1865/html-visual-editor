@@ -154,8 +154,9 @@ export function zipFiles(files) {
   const directory = Buffer.concat(central), end = Buffer.alloc(22);end.writeUInt32LE(0x06054b50, 0);end.writeUInt16LE(files.length, 8);end.writeUInt16LE(files.length, 10);end.writeUInt32LE(directory.length, 12);end.writeUInt32LE(offset, 16);
   return Buffer.concat([...parts, directory, end]);
 }
-export async function exportProjectZip(manager, id, entry, currentPatches) {
+export async function exportProjectZip(manager, id, entry, currentPatches, {sourceOnly=false} = {}) {
   const project = await manager.describe(id, entry), files = [];let size = 0;
+  if(sourceOnly && Object.keys(currentPatches || {}).length)throw error(`${entry} 仍有未写入源码的修改，请先保存并完成 AI 待办`,409);
   async function walk(folder = '') {
     for (const item of await readdir(join(project.root, folder), { withFileTypes: true })) {
       if (ignored(item.name) || item.isSymbolicLink()) continue;
@@ -167,7 +168,9 @@ export async function exportProjectZip(manager, id, entry, currentPatches) {
       let bytes = await readFile(absolute);
       if (/\.html?$/i.test(path)) {
         const page = await manager.describe(id, path);
-        const patches = structuredClone(path === entry ? currentPatches : (await readVisualEdits(page.editsFile)).patches);
+        const savedPatches = sourceOnly || path !== entry ? (await readVisualEdits(page.editsFile)).patches : {};
+        if(sourceOnly && Object.keys(savedPatches).length)throw error(`${path} 仍有未写入源码的修改，请打开该页面保存并完成 AI 待办`,409);
+        const patches = sourceOnly ? {} : structuredClone(path === entry ? currentPatches : savedPatches);
         for (const patch of Object.values(patches)) {
           if (patch.insert?.html) patch.insert.html = patch.insert.html.replaceAll(`/project/${id}/`, '/');
           for (const [key,value] of Object.entries(patch.styles || {})) patch.styles[key] = value.replaceAll(`/project/${id}/`, '/');

@@ -1,0 +1,112 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {createServer} from 'node:http';import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';import {join} from 'node:path';import {tmpdir} from 'node:os';
+import {createAIService} from '../ai-service.mjs';import {ensureSourceOrigin,saveSource,readSourceState} from '../source-store.mjs';import {readVisualEdits} from '../visual-edits-store.mjs';
+test('AI can return bounded source replacements and explains empty or truncated responses',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-replacements-')),editor=join(root,'editor');
+ const project={root,entry:'index.html',editsFile:join(root,'.visual-editor','page','visual-edits.json'),backupDir:join(root,'.visual-editor','page','backups')};
+ const pending={version:1,patches:{label:{selector:'#label',text:'New',ai:{fields:{text:'Generated text'},context:{path:'#label'}}}}};
+ const original='<p id="label">Old</p><p>Repeated</p><p>Repeated</p>'+ '<div>Unrelated source</div>'.repeat(5000);
+ let mode='edit',instruction;
+ const server=createServer(async(req,res)=>{
+  let body='';for await(const chunk of req)body+=chunk;
+  instruction=JSON.parse(body).messages[0].content;
+  const output=mode==='empty'?{files:{},explanation:'完整源码过长，无法完整返回'}:mode==='ambiguous'?{edits:[{path:'index.html',before:'<p>Repeated</p>',after:'<p>Changed</p>'}]}:mode==='missing'?{edits:[{path:'index.html',before:'Missing snippet',after:'New'}]}:mode==='outside'?{edits:[{path:'../secret',before:'Old',after:'New'}]}:mode==='conflicting'?{edits:[{path:'index.html',before:'<p id="label">Old</p>',after:'<p id="label">New</p>'},{path:'index.html',before:'<p id="label">Old</p>',after:'<p id="label">Other</p>'}]}:{edits:[{path:'index.html',before:'<p id="label">Old</p>',after:'<p id="label">New</p>'}],explanation:'Only changed the requested label'};
+  res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{finish_reason:mode==='truncated'?'length':'stop',message:{content:JSON.stringify(output)}}]}));
+ });
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ try{
+  await writeFile(join(root,'index.html'),original);
+  const baseline=await ensureSourceOrigin(project,editor);
+  await saveSource(project,editor,{revision:baseline.revision,html:original,draft:pending,pending});
+  const service=createAIService(editor);await service.settings({endpoint:`http://127.0.0.1:${server.address().port}/v1`,model:'test',apiKey:'test-only-key'});
+  const proposal=await service.generate(project);
+  assert.match(proposal.baselineUrl,/^\/ai-baseline\//);
+  assert.equal(service.proposal(proposal.id).originalFiles['index.html'],original);
+  assert.equal(service.proposal(proposal.id).allFiles['index.html'],proposal.changes[0].after);
+  assert.match(instruction,/"edits"/);assert.match(instruction,/textNodes/);
+  assert.equal(proposal.changes.length,1);assert.equal(proposal.changes[0].after,original.replace('<p id="label">Old</p>','<p id="label">New</p>'));
+  assert.equal(await readFile(join(root,'index.html'),'utf8'),original);
+  for(const [value,message] of [['ambiguous',/唯一/],['missing',/匹配/],['outside',/范围外/],['conflicting',/匹配/],['empty',/完整源码过长/],['truncated',/截断/]]){
+   mode=value;await assert.rejects(service.generate(project),message);
+   assert.deepEqual((await readVisualEdits(project.editsFile)).patches,pending.patches);
+  }
+  await service.apply(project,{id:proposal.id,verified:true});
+  assert.equal(await readFile(join(root,'index.html'),'utf8'),proposal.changes[0].after);
+ }finally{await new Promise(resolve=>server.close(resolve));await rm(root,{recursive:true,force:true});}
+});
+test('AI uses saved source, validates files, preserves pending on failure and stale writes, applies with backup',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-service-')),editor=join(root,'editor');
+ const project={root,entry:'index.html',editsFile:join(root,'.visual-editor','page','visual-edits.json'),backupDir:join(root,'.visual-editor','page','backups')};
+ const pending={version:1,patches:{generated:{selector:'#generated',text:'New generated',ai:{fields:{text:'Script overwrites text'},context:{path:'#generated'}}}}};
+ let task,mode='good';
+ const server=createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;task=JSON.parse(JSON.parse(body).messages[1].content);const files=mode==='outside'?{'../secret':'no'}:mode==='syntax'?{'app.js':'const ='}:{'app.js':'document.querySelector("#generated").textContent="New generated";'};
+ res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({files,explanation:'Updated generator'})}}]}));});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ process.env.VE_TEST_MODEL_KEY='test-only-secret';
+ try {
+  await writeFile(join(root,'index.html'),'<p id="static">Original</p><p id="generated">Before</p>');await writeFile(join(root,'app.js'),'document.querySelector("#generated").textContent="Old";');
+  const baseline=await ensureSourceOrigin(project,editor);
+  await saveSource(project,editor,{revision:baseline.revision,html:'<p id="static">Direct saved</p><p id="generated">Before</p>',draft:pending,pending});
+  const service=createAIService(editor);
+  const settings=await service.settings({endpoint:`http://127.0.0.1:${server.address().port}/v1`,model:'test',apiKeyEnv:'VE_TEST_MODEL_KEY'});
+  assert.equal(settings.ready,true);assert.ok(!JSON.stringify(settings).includes('test-only-secret'));
+  mode='outside';await assert.rejects(service.generate(project),/范围外/);
+  mode='syntax';await assert.rejects(service.generate(project),/语法错误/);
+  assert.deepEqual((await readVisualEdits(project.editsFile)).patches,pending.patches);
+  mode='good';const proposal=await service.generate(project);assert.match(task.files['index.html'],/Direct saved/);assert.deepEqual(task.requirements,pending.patches);
+  await assert.rejects(service.apply(project,{id:proposal.id,verified:false}),/验证/);
+  await writeFile(join(root,'app.js'),'const external=true;');
+  await assert.rejects(service.apply(project,{id:proposal.id,verified:true}),/发生变化/);
+  assert.deepEqual((await readVisualEdits(project.editsFile)).patches,pending.patches);
+  const fresh=await service.generate(project);await service.apply(project,{id:fresh.id,verified:true});
+  assert.match(await readFile(join(root,'app.js'),'utf8'),/New generated/);
+  assert.match((await readSourceState(project,editor)).source,/Direct saved/);
+  assert.deepEqual((await readVisualEdits(project.editsFile)).patches,{});
+ }finally {delete process.env.VE_TEST_MODEL_KEY;await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
+});
+
+test('connection test invokes the selected model, reports latency, handles errors without exposing credentials or saving settings',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-connect-'));let received,mode='success',calls=0;
+ const server=createServer(async(req,res)=>{calls++;let body='';for await(const chunk of req)body+=chunk;received={path:req.url,body:JSON.parse(body)};
+  if(mode==='auth'){res.writeHead(401);return res.end('test-only-private-key');}
+  res.setHeader('content-type','application/json');res.end(mode==='invalid'?'{}':JSON.stringify({choices:[{message:{content:'OK'}}]}));
+ });
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));process.env.VE_CONNECT_KEY='test-only-private-key';
+ try{
+  const service=createAIService(root),options={endpoint:`http://127.0.0.1:${server.address().port}/v1`,model:'test-model',apiKeyEnv:'VE_CONNECT_KEY'};
+  const result=await service.testConnection(options);
+  assert.equal(result.connected,true);assert.equal(result.model,'test-model');assert.ok(result.elapsedMs>=0);
+  assert.equal(received.path,'/v1/chat/completions');assert.equal(received.body.model,'test-model');assert.equal(received.body.messages.length,1);
+  assert.equal((await service.settings()).configured,false);assert.ok(!JSON.stringify(result).includes('test-only-private-key'));
+  mode='auth';await assert.rejects(service.testConnection(options),error=>/401.*密钥/.test(error.message) && !error.message.includes('test-only-private-key'));
+  mode='invalid';await assert.rejects(service.testConnection(options),/有效的模型回复/);
+  const before=calls;await assert.rejects(service.testConnection({...options,apiKeyEnv:'VE_MISSING_TEST_KEY'}),/未读取到/);assert.equal(calls,before);
+ }finally{delete process.env.VE_CONNECT_KEY;await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
+});
+
+test('model listing uses the configured account, normalizes identifiers, and supports an empty model field',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-models-'));let path,mode='good';
+ const server=createServer((req,res)=>{path=req.url;res.setHeader('content-type','application/json');if(mode==='unsupported'){res.writeHead(404);return res.end('{}');}res.end(JSON.stringify({data:[{id:'beta'},{id:'alpha'},{id:'beta'},{id:12},{id:''}]}));});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));process.env.VE_MODELS_KEY='private-test-key';
+ try{
+  const service=createAIService(root),options={endpoint:`http://127.0.0.1:${server.address().port}/v1/chat/completions`,model:'',apiKeyEnv:'VE_MODELS_KEY'};
+  assert.deepEqual((await service.listModels(options)).models,['alpha','beta']);assert.equal(path,'/v1/models');
+  assert.equal((await service.settings()).configured,false);
+  mode='unsupported';await assert.rejects(service.listModels(options),/不支持.*手动/);
+ }finally{delete process.env.VE_MODELS_KEY;await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
+});
+
+test('custom HTTP endpoints and direct keys work without leaking keys; stored key is reused only for its endpoint',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-direct-key-'));let auth;
+ const server=createServer((req,res)=>{auth=req.headers.authorization;res.setHeader('content-type','application/json');res.end(req.method==='GET'?JSON.stringify({data:[{id:'custom'}]}):JSON.stringify({choices:[{message:{content:'OK'}}]}));});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ try{
+  const service=createAIService(root),options={endpoint:`http://127.0.0.1:${server.address().port}/v1`,model:'custom',apiKey:'dummy-direct-key',apiKeyEnv:''};
+  assert.equal((await service.settings({...options,endpoint:'http://192.0.2.10:8317/v1'})).ready,true);
+  const saved=await service.settings(options);assert.equal(saved.hasAPIKey,true);assert.ok(!JSON.stringify(saved).includes('dummy-direct-key'));
+  assert.equal((await service.testConnection({...options,apiKey:''})).connected,true);assert.equal(auth,'Bearer dummy-direct-key');
+  assert.deepEqual((await service.listModels({endpoint:options.endpoint,apiKeyEnv:''})).models,['custom']);
+  await assert.rejects(service.testConnection({...options,apiKey:'',endpoint:'https://example.invalid/v1'}),/填写 API 密钥/);
+  const {stat}=await import('node:fs/promises');assert.equal((await stat(join(root,'.editor-workspaces','ai-config.json'))).mode&0o777,0o600);
+ }finally{await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
+});

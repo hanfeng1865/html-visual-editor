@@ -1,0 +1,72 @@
+import {chromium} from 'playwright';import {createServer} from 'node:http';
+import {createDevServer} from '../dev-server.mjs';import {mkdtemp,cp,writeFile,readFile,mkdir,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';import assert from 'node:assert/strict';
+const temp=await mkdtemp(join(tmpdir(),'ai-ui-')),project=join(temp,'project'),editorDir=join(temp,'editor');await mkdir(project);
+await cp(new URL('../',import.meta.url),editorDir,{recursive:true,filter:path=>!['.git','node_modules','.editor-workspaces','editor-config.json'].includes(path.split(/[\\/]/).pop())});
+await writeFile(join(project,'index.html'),'<!doctype html><html><head><style>h1,p{margin:100px 20px}</style><script src="/app.js" defer></script></head><body><h1 id="title">Original</h1><p id="rewritten">Source text</p><div data-ve-dynamic><p id="live">Source live</p></div><script>throw new Error("Existing baseline problem")</script></body></html>');
+await writeFile(join(project,'app.js'),'document.querySelector("#rewritten").textContent="Script text";document.querySelector("#live").textContent="Live text";');
+let task,modelMode='fail',connectionMode='good';
+const model=createServer(async(req,res)=>{if(req.url==='/v1/models'){res.setHeader('content-type','application/json');res.end(JSON.stringify({data:[{id:'test'},{id:'second-model'}]}));return;}let body='';for await(const chunk of req)body+=chunk;const requestBody=JSON.parse(body);if(requestBody.messages[0].content==='Reply with OK only.'){
+ if(connectionMode==='auth'){res.writeHead(401);res.end();return;}
+ res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:'OK'}}]}));return;
+}if(modelMode==='fail'){res.writeHead(503);res.end();return;}task=JSON.parse(JSON.parse(body).messages[1].content);
+res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({edits:[{path:'app.js',before:task.files['app.js'],after:modelMode==='wrong'?'document.querySelector("#rewritten").textContent="Wrong";':'document.querySelector("#rewritten").textContent="AI text";document.querySelector("#live").textContent="AI live";'+(modelMode==='new-error'?'throw new Error("AI regression");':modelMode==='new-resource'?'const image=new Image();image.src="missing-ai-image.png";document.body.append(image);':'')}],explanation:'Updated generator'})}}]}));});
+await new Promise(r=>model.listen(0,'127.0.0.1',r));process.env.VE_UI_MODEL_KEY='test-key';
+const server=createDevServer({rootDir:temp,editorDir});await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
+const post=async(path,body)=>(await fetch(base+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})).json();
+const p=await post('/api/projects/open',{path:project});
+await post('/api/ai/settings',{endpoint:`http://127.0.0.1:${model.address().port}/v1`,model:'test',apiKeyEnv:'VE_UI_MODEL_KEY'});
+const browser=await chromium.launch({headless:true});
+try{
+ const page=await browser.newPage({viewport:{width:1700,height:1050}});page.setDefaultTimeout(10000);const errors=[];page.on('pageerror',e=>{if(!['Existing baseline problem','AI regression'].includes(e.message))errors.push(e.message);});
+ await page.goto(`${base}/editor/editor.html?project=${p.id}&entry=index.html`);const f=page.frameLocator('#prototype-frame');await f.locator('body[data-ve-editor-ready=true]').waitFor();await page.locator('#ai-button').click();
+ assert.match(await page.locator('#saveability-summary').textContent(),/待 AI 写入：0 项/);
+ assert.equal(await page.locator('#ai-pending-count').textContent(),'0');
+ assert.match(await page.locator('#ai-empty').textContent(),/还没有需要 AI 写入的修改/);
+ assert.equal(await page.locator('#ai-start-edit').isVisible(),true);
+ await page.locator('#ai-settings > summary').click();
+ await page.waitForFunction(()=>document.querySelector('#ai-models-status').textContent.includes('2 个模型'));
+ await page.locator('#ai-model-toggle').click();await page.locator('#ai-model-search').fill('second');assert.equal(await page.locator('#ai-model-options [role=option]').count(),1);await page.locator('#ai-model-options [role=option]').click();assert.equal(await page.locator('#ai-model').inputValue(),'second-model');
+ await page.locator('#ai-model-toggle').click();await page.locator('#ai-model-search').fill('test');await page.locator('#ai-model-search').press('ArrowDown');await page.locator('#ai-model-search').press('Enter');assert.equal(await page.locator('#ai-model').inputValue(),'test');
+ await page.locator('#ai-test').click();
+ await page.waitForFunction(()=>document.querySelector('#ai-test-result').dataset.kind==='success');
+ assert.match(await page.locator('#ai-test-result').textContent(),/已连接 · \d+ ms · test — OK/);
+ connectionMode='auth';await page.locator('#ai-test').click();await page.waitForFunction(()=>document.querySelector('#ai-test-result').dataset.kind==='error');assert.match(await page.locator('#ai-test-result').textContent(),/401.*密钥/);
+ assert.equal(await page.locator('#ai-test').isEnabled(),true);
+ connectionMode='good';await page.locator('.ai-advanced summary').click();await page.locator('#ai-key-env').fill('');await page.locator('#ai-api-key').fill('dummy-browser-key');await page.locator('#ai-settings-save').click();await page.waitForFunction(()=>document.querySelector('#ai-api-key').value==='' && document.querySelector('#ai-api-key').placeholder.includes('已保存'));
+ await page.locator('#ai-test').click();await page.waitForFunction(()=>document.querySelector('#ai-test-result').dataset.kind==='success');await page.locator('#ai-start-edit').click();
+ await page.locator('[data-mode=edit]').click();
+ const textNodeChecks=await page.evaluate(async()=>{
+  const {verifyAIPage}=await import('./ai-editor.mjs');
+  const doc=new DOMParser().parseFromString('<p id="empty"></p><strong id="parent"><small>Unit</small></strong><p id="wrong"><b>Expected</b></p>','text/html');
+  const cleared=await verifyAIPage(doc,{empty:{selector:'#empty',textNodes:{0:''}},parent:{selector:'#parent',textNodes:{0:''}}});
+  const nested=await verifyAIPage(doc,{wrong:{selector:'#wrong',textNodes:{0:'Expected'}}});
+  return {cleared,nested};
+ });
+ assert.deepEqual(textNodeChecks.cleared,[]);assert.equal(textNodeChecks.nested.length,1);
+ async function text(selector,value){await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));await f.locator(selector).click({modifiers:['Alt']});await page.locator('#prop-text').fill(value);await page.locator('#prop-text').dispatchEvent('change');assert.equal(await f.locator(selector).textContent(),value);}
+ await text('#title','Direct saved');
+ assert.match(await page.locator('#saveability-summary').textContent(),/待 AI 写入：0 项/);
+ await text('#rewritten','AI text');
+ assert.match(await page.locator('#saveability-summary').textContent(),/待 AI 写入：1 项/);
+ await page.locator('#ai-button').click();assert.equal(await page.locator('#ai-pending-count').textContent(),'1');assert.equal(await page.locator('#ai-empty').isVisible(),false);await page.locator('#ai-close').click();
+ await page.locator('#prop-color-text').fill('#123456');await page.locator('#prop-color-text').dispatchEvent('change');
+ await text('#live','AI live');
+ await page.locator('#ai-button').click();assert.equal(await page.locator('#ai-pending-count').textContent(),'2');await page.locator('#ai-generate').click();
+ await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('HTTP 503'));
+ const html=await readFile(join(project,'index.html'),'utf8');assert.match(html,/Direct saved/);assert.match(html,/rgb\(18, 52, 86\)/);assert.doesNotMatch(html,/AI text/);
+ const config=await (await fetch(base+`/api/projects/current?project=${p.id}&entry=index.html`)).json();
+ const patches=JSON.parse(await readFile(config.editsFile,'utf8')).patches;assert.equal(Object.values(patches).find(v=>v.selector==='#rewritten').text,'AI text');assert.equal(Object.values(patches).find(v=>v.selector==='#rewritten').styles,undefined);
+ await page.reload();await f.locator('body[data-ve-editor-ready=true]').waitFor();assert.equal(await f.locator('#rewritten').textContent(),'AI text');assert.equal(await f.locator('#live').textContent(),'AI live');
+ modelMode='wrong';await page.locator('#ai-button').click();await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('未通过验证'));assert.equal(await page.locator('#ai-apply').isDisabled(),true);assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
+ modelMode='new-error';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('AI regression'));assert.equal(await page.locator('#ai-apply').isDisabled(),true);
+ modelMode='new-resource';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('missing-ai-image.png'));assert.equal(await page.locator('#ai-apply').isDisabled(),true);
+ modelMode='good';await page.locator('#ai-generate').click();await page.locator('#ai-apply').waitFor({state:'visible'});
+ await page.waitForFunction(()=>!document.querySelector('#ai-apply').disabled);
+ assert.match(await page.locator('#ai-status').textContent(),/原页面已有/);
+ assert.equal(await page.locator('iframe[data-ai-baseline]').count(),0);
+ assert.match(task.files['index.html'],/Direct saved/);assert.match(task.files['index.html'],/rgb\(18, 52, 86\)/);
+ await page.locator('#ai-apply').click();await page.waitForFunction(()=>!document.querySelector('#ai-dialog').open);
+ assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,{});
+ const standalone=await browser.newPage();await standalone.goto(`${base}/project/${p.id}/index.html`);assert.equal(await standalone.locator('#rewritten').textContent(),'AI text');assert.equal(await standalone.locator('#live').textContent(),'AI live');assert.equal(await standalone.locator('#title').textContent(),'Direct saved');
+ assert.deepEqual(errors,[]);console.log('PASS: direct styles/static edits save first; model failure retains pending; reload previews; latest source sent; fresh page verifies model; confirmed code write clears pending');
+}finally{delete process.env.VE_UI_MODEL_KEY;await browser.close();await new Promise(r=>server.close(r));await new Promise(r=>model.close(r));await rm(temp,{recursive:true,force:true});}

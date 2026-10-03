@@ -45,7 +45,6 @@ export function textTargetsForElement(element, doc) {
 export function contentFields(card) {
   const result=[];
   for (const element of [card,...card.querySelectorAll('*')]) {
-    if (element.closest('[data-ve-dynamic]')) continue;
     if (element.closest('svg,script,style,template') || element.closest('[hidden]')) continue;
     if (!element.getClientRects().length) continue;
     [...element.childNodes].forEach((node,index)=>{

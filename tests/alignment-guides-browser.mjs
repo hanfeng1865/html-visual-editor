@@ -1,14 +1,17 @@
 import {chromium} from 'playwright';
 import {createDevServer} from '../dev-server.mjs';
-import {mkdtemp,writeFile,mkdir,rm} from 'node:fs/promises';
+import {mkdtemp,cp,writeFile,mkdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import assert from 'node:assert/strict';
 
 const temp=await mkdtemp(join(tmpdir(),'alignment-ui-')),project=join(temp,'project');
 await mkdir(project);
+// Keep the project registry isolated from the user's running editor and other tests.
+const editorDir=join(temp,'editor');
+await cp(new URL('../',import.meta.url),editorDir,{recursive:true,filter:path=>!['.git','node_modules','.editor-workspaces','editor-config.json'].includes(path.split(/[\\/]/).pop())});
 await writeFile(join(project,'index.html'),'<!doctype html><html><head><style>body{margin:0;min-height:900px;background:#fafafa}.card{position:absolute;width:160px;height:80px;border:1px solid #ddd;border-radius:10px;background:white;box-sizing:border-box}#reference{left:40px;top:80px}#moving{left:260px;top:180px}</style></head><body><div id="reference" class="card"></div><div id="moving" class="card"></div></body></html>');
-const server=createDevServer({rootDir:temp,editorDir:process.cwd()});
+const server=createDevServer({rootDir:temp,editorDir});
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const base=`http://127.0.0.1:${server.address().port}`;
 const projectData=await (await fetch(base+'/api/projects/open',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:project})})).json();

@@ -66,5 +66,19 @@ try{
  const preview=page.frameLocator('#history-preview');assert.equal(await preview.locator('#title').textContent(),'Original');assert.equal(await preview.locator('#title').evaluate(n=>getComputedStyle(n).color),'rgb(255, 0, 0)');
  await page.locator('#history-restore').click();await page.locator('#source-confirm').waitFor();await page.locator('#source-confirm').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);
  assert.equal(await readFile(join(project,'index.html'),'utf8'),original);assert.equal(await readFile(join(project,'style.css'),'utf8'),'h1{color:rgb(255,0,0)}');
+ await f.locator('body[data-ve-editor-ready="true"]').waitFor();await page.locator('[data-mode="edit"]').click();await edit('Developer handoff');
+ const exported=page.waitForEvent('download');
+ await page.locator('#export-menu-button').click();await page.locator('#export-html-button').click();
+ const artifact=await exported;
+ assert.match(await readFile(join(project,'index.html'),'utf8'),/Developer handoff/);
+ const archive=await readFile(await artifact.path());
+ assert.ok(archive.toString('utf8').includes('<h1 id="title">Developer handoff</h1>'));
+ assert.ok(!archive.toString('utf8').includes('createVisualPatchEngine'));
+ await f.locator('body[data-ve-editor-ready="true"]').waitFor();await edit('Shortcut saved');
+ const shortcutSaved=page.waitForResponse(response=>response.url().includes('/api/source-save') && response.request().method()==='POST');
+ await page.locator('#prop-text').press('Control+s');
+ assert.equal((await shortcutSaved).status(),200);
+ await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);
+ assert.match(await readFile(join(project,'index.html'),'utf8'),/Shortcut saved/);
  assert.deepEqual(errors,[]);console.log('PASS: source write, disjoint merge, conflict choices, runtime persistence, archived CSS/JS preview, full source restore');
 }finally{await browser.close();await new Promise(r=>server.close(r));await rm(temp,{recursive:true,force:true});}

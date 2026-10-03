@@ -11,12 +11,12 @@ export function createVisualPatchEngine(doc) {
   function originalSelector(element) {
     if (identities.has(element)) return identities.get(element);
     if (element.dataset.veNode) return `[data-ve-node="${escape(element.dataset.veNode)}"]`;
-    if (element.id) return `#${escape(element.id)}`;
+    if (element.id && doc.querySelectorAll('#'+escape(element.id)).length===1) return `#${escape(element.id)}`;
     const parts = [];
     let current = element;
     while (current && current !== doc.body) {
       if (identities.has(current)) { parts.unshift(identities.get(current)); break; }
-      if (current.id) { parts.unshift(`#${escape(current.id)}`); break; }
+      if (current.id && doc.querySelectorAll('#'+escape(current.id)).length===1) { parts.unshift(`#${escape(current.id)}`); break; }
       let part = current.tagName.toLowerCase();
       const classes = [...current.classList].filter(name =>
         !['active', 'open', 'selected'].includes(name) && !name.startsWith('ve-') && !name.startsWith('lucide')).slice(0, 2);
@@ -26,12 +26,17 @@ export function createVisualPatchEngine(doc) {
       parts.unshift(part);
       current = current.parentElement;
     }
+    if(parts.length && current===doc.body)parts.unshift('body');
     return parts.join(' > ') || 'body';
   }
 
   function capture() {
     // Capture descendants too: a move of a container changes every positional path.
     for (const element of doc.querySelectorAll('body, body *')) {
+      const previousSelector=identities.get(element);
+      if(previousSelector?.startsWith('#') && doc.querySelectorAll(previousSelector).length>1) {
+        identities.delete(element);targets.delete(previousSelector);
+      }
       if (!identities.has(element)) {
         const selector = originalSelector(element);
         identities.set(element, selector);
@@ -120,8 +125,8 @@ export function createVisualPatchEngine(doc) {
         continue;
       }
       const hasDynamicText = Boolean(element.closest('[data-ve-dynamic]'));
-      if (!hasDynamicText && !element.isContentEditable && typeof patch.text === 'string' && element.childElementCount === 0 && element.textContent !== patch.text) element.textContent = patch.text;
-      if (!hasDynamicText && !element.isContentEditable) for (const [index, text] of Object.entries(patch.textNodes || {})) {
+      if ((!hasDynamicText || patch.ai?.fields?.text || patch.templateText) && !element.isContentEditable && typeof patch.text === 'string' && element.childElementCount === 0 && element.textContent !== patch.text) element.textContent = patch.text;
+      if ((!hasDynamicText || patch.ai?.fields?.textNodes) && !element.isContentEditable) for (const [index, text] of Object.entries(patch.textNodes || {})) {
         const node = element.childNodes[Number(index)];
         if (node?.nodeType === 3 && node.textContent !== text) node.textContent = text;
       }

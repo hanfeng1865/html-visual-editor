@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const allowedPatchKeys = new Set(['selector', 'text', 'styles', 'position', 'deleted', 'textNodes', 'icon', 'image', 'insert', 'concealed', 'locked', 'attributes']);
+const allowedPatchKeys = new Set(['selector', 'text', 'styles', 'position', 'deleted', 'textNodes', 'icon', 'image', 'insert', 'concealed', 'locked', 'attributes', 'ai', 'templateText']);
 
 function plainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -21,6 +21,13 @@ export function validateVisualEdits(value) {
       if (!allowedPatchKeys.has(property)) throw new Error(`补丁 ${key} 包含不支持的字段 ${property}`);
     }
     if (typeof patch.selector !== 'string' || !patch.selector.trim()) throw new Error(`补丁 ${key} 缺少 selector`);
+    if ('ai' in patch) {
+      if (!plainObject(patch.ai) || !plainObject(patch.ai.fields) || !plainObject(patch.ai.context)
+        || !Object.entries(patch.ai.fields).every(([field,reason])=>allowedPatchKeys.has(field) && !['selector','ai'].includes(field) && typeof reason==='string' && reason.length<=2000)
+        || JSON.stringify(patch.ai.context).length>40000) throw new Error('AI 修改要求格式无效');
+      for (const value of Object.values(patch.ai.context)) if (typeof value!=='string') throw new Error('AI 组件上下文必须是文字');
+    }
+    if('templateText' in patch && (!plainObject(patch.templateText) || !Number.isInteger(patch.templateText.scriptIndex) || patch.templateText.scriptIndex<0 || typeof patch.templateText.needle!=='string' || !patch.templateText.needle || patch.templateText.needle.length>20000))throw new Error('模板文字定位格式无效');
     if ('text' in patch && typeof patch.text !== 'string') throw new Error(`补丁 ${key} 的 text 必须是字符串`);
     if ('deleted' in patch && patch.deleted !== true) throw new Error(`补丁 ${key} 的 deleted 只能为 true`);
     if ('textNodes' in patch && (!plainObject(patch.textNodes) || !Object.entries(patch.textNodes).every(([index,text]) => /^(0|[1-9]\d*)$/.test(index) && typeof text === 'string'))) throw new Error('文字片段格式无效');

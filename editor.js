@@ -1,6 +1,9 @@
+import {verifyAIPage,compareAIErrors,loadAIFrame} from './ai-editor.mjs';
+import {splitEditRoutes} from './ai-routing.mjs';
+import { segmentIntersectsRect } from './sweep-selection.mjs';
 import { selectionLayoutOffsets } from './selection-layout.mjs';
 import {installVersionComparison} from './version-comparison.mjs';
-import { pickElementAtPoint } from './element-picking.mjs';
+import { pickElementAtPoint, pickElementsAtPoint } from './element-picking.mjs';
 import { alignmentSnap, alignmentMatches, unionRects } from './alignment-guides.mjs';
 import { CARD_SELECTOR, STYLE_PROPERTIES, ICON_CHOICES, IMAGE_CHOICES, elementLabel, contentFields, textTargetsForElement } from './editor-components.mjs';
 import {
@@ -18,6 +21,7 @@ import { createStandaloneHtml } from './export-html.mjs';
 import { interactiveHistorySource } from './history-preview.mjs';
 import {compileSource} from './source-compiler.mjs';
 import {readSourcePatches, mergeSourcePatches} from './source-runtime.mjs';
+import {createSaveabilityChecker} from './saveability.mjs';
 import { tableRowContext, blankTableRow, tableColumnContext, blankTableCell, columnInsertTarget, columnDeleteTarget } from './table-row-actions.mjs';
 import { isTextToolbarTarget, textToolbarStyles } from './text-toolbar.mjs';
 
@@ -31,8 +35,10 @@ const STORAGE_KEY = projectId === 'builtin' ? 'jx-visual-editor-experiment-v2' :
 const DRAFT_DIRTY_KEY = `${STORAGE_KEY}-dirty`;
 const SOURCE_BASE_KEY = `${STORAGE_KEY}-source-base`;
 let sourceBaseline=null;
+let loadedSourceDocument=null;
 let loadedSourceRevision=null;
 let refreshingSource=false;
+let saveabilityStats={ready:false,blocked:0,runtime:0};
 const HELP_OPEN_KEY = 'html-editor-help-open';
 const frame = document.getElementById('prototype-frame');
 const canvasFrame = document.getElementById('canvas-frame');
@@ -133,26 +139,91 @@ let cardInputs = [];
 let copiedFormat = null;
 
 function selectedList() { return [...selectedElements].filter(element=>element.isConnected && !isLocked(element)); }
+function saveabilityChecker(patches=state.patches) {
+  return loadedSourceDocument && createSaveabilityChecker(loadedSourceDocument, patches, frameDocument(), state.patches);
+}
+function allowEntries(entries) {
+  const patches={...state.patches};
+  for(const [key,patch] of entries)patches[key]={...patches[key],...patch};
+  const checker=saveabilityChecker(patches);
+  if(!checker){showToast('尚未读取页面源码，请刷新代码后再编辑');return false;}
+  for(const [,patch] of entries) {
+    const fields={},element=frameDocument().querySelector(patch.selector);
+    for(const [field,value] of Object.entries(patch))if(!['selector','ai','templateText'].includes(field)) {
+      const reason=checker.check({selector:patch.selector,[field]:value});if(reason)fields[field]=reason;
+    }
+    if('text' in patch){const binding=checker.templateBinding(patch.selector);if(binding)patch.templateText=binding;}
+    if(Object.keys(fields).length)patch.ai={fields,context:{label:element?elementLabel(element):patch.selector,html:element?.outerHTML.slice(0,15000)||'',path:patch.selector}};
+  }
+  return true;
+}
+function allowChange(element,change={styles:{}}) {
+  const selector=selectorFor(element);
+  return allowEntries([[elementKey(selector),{selector,...change}]]);
+}
+function allowReorder(parent) {
+  return allowEntries([...parent.children].filter(node=>!node.matches('script,style,template')).map((node,index)=>{
+    const selector=selectorFor(node);return [elementKey(selector),{selector,position:{parent:selectorFor(parent),index}}];
+  }));
+}
+function updateSaveability() {
+  const checker=saveabilityChecker();
+  const summary=document.getElementById('saveability-summary');
+  if(!checker){summary.dataset.kind='blocked';summary.textContent='尚未读取源码，暂时无法编辑。请刷新代码。';return;}
+  let runtime=0,blocked=0;
+  for(const element of frameDocument().body.querySelectorAll('*')) {
+    if(element.closest('script,style,template,svg *,#editor-change-overlay') || element.id.startsWith('ve-editor-'))continue;
+    const status=checker.target(selectorFor(element));
+    if(status.kind==='runtime')runtime++;
+    if(status.kind==='blocked')blocked++;
+  }
+  saveabilityStats={ready:true,blocked,runtime};
+  routePendingEdits();
+}
+function renderPendingHints(count) {
+  document.getElementById('ai-button').textContent=count?'AI 待办 · '+count:'AI 待办';
+  const summary=document.getElementById('saveability-summary');
+  if(saveabilityStats.ready) {
+    summary.dataset.kind=count?'blocked':'source';
+    const description=saveabilityStats.blocked?`页面检查：${saveabilityStats.blocked} 个元素的修改可能需要 AI 辅助写入。`:saveabilityStats.runtime?`页面检查：${saveabilityStats.runtime} 个动态元素可通过页面调整记录保存。`:'页面检查：普通修改可直接写回源码。';
+    summary.textContent=description+` 待 AI 写入：${count} 项（只统计你实际做过的修改）。`;
+  }
+  const detail=document.getElementById('ai-empty-detail');
+  detail.textContent=(saveabilityStats.blocked?`页面检测到 ${saveabilityStats.blocked} 个可能需要 AI 辅助写入的元素。`:'')+'先进入编辑模式，选中并修改组件；需要 AI 写回的修改会自动显示在这里。';
+}
+
+function restoreSaveabilityControls() {
+  document.querySelectorAll('[data-saveability-disabled]').forEach(control=>{control.disabled=false;delete control.dataset.saveabilityDisabled;});
+}
+function renderSaveability() {
+  restoreSaveabilityControls();
+  const checker=saveabilityChecker(),element=selectedList()[0];if(!element)return;
+  const status=checker?.target(selectorFor(element)) || {kind:'blocked',reason:'尚未读取源码'};
+  const section=document.getElementById('saveability-section');section.dataset.kind=status.kind;
+  document.getElementById('saveability-title').textContent=status.kind==='blocked'?'修改将交给 AI 写入':status.kind==='template'?'文字直接写回生成模板':status.kind==='runtime'?'通过页面调整记录保存':'直接写回 HTML';
+  document.getElementById('saveability-detail').textContent=status.reason+'。无法直接写入的修改会保留预览，保存时进入 AI 待办。';
+}
 function commitChanges(changes) {
   const entries = changes.map(({element,...change})=>{
     const selector=selectorFor(element);
     return [elementKey(selector),{selector,...change}];
   });
+  if(!allowEntries(entries))return false;
   const next = batchElementChanges(state, entries);
   if(next===state)return;
-  state=next; applyAllPatches(); persistState();
+  state=next; applyAllPatches(); persistState();return true;
 }
 function commitCardForm() {
   const changes=[];
   for(const field of cardInputs) {
     const value=field.input.value;
-    if(value===field.original || !field.element.isConnected)continue;
+    if(field.input.disabled || value===field.original || !field.element.isConnected)continue;
     if(field.kind==='icon' || field.kind==='image') changes.push({element:field.element,[field.kind]:value});
     else if(field.leaf) changes.push({element:field.element,text:value});
     else changes.push({element:field.element,textNodes:{[field.index]:value}});
     field.original=value;
   }
-  if(changes.length) {commitChanges(changes);showToast('卡片内容已应用');}
+  if(changes.length && commitChanges(changes))showToast('卡片内容已应用');
 }
 function renderCardForm(element) {
   const section=document.getElementById('card-section');
@@ -243,12 +314,14 @@ document.getElementById('paste-format').addEventListener('click',()=>{
       if(matching)changes.push({element:field.element,styles:matching.styles});
     }
   }
-  commitChanges(changes);fillInspector(selectedElement);showToast(`已向 ${selectedElements.size} 个元素应用格式`);
+  if(!commitChanges(changes))return;
+  fillInspector(selectedElement);showToast(`已向 ${selectedElements.size} 个元素应用格式`);
   updateTextToolbar();
 });
 
 let pointerMode = 'move';
 let moveGesture = null;
+let sweepGesture = null;
 let suppressNextClick = false;
 function translationFor(element) {
   const parts=(element.style.translate || '').split(/\s+/);
@@ -273,7 +346,8 @@ function arrangeSelection(action) {
     return [{element,styles:{translate:`${origin.x+x}px ${origin.y+y}px`}}];
   });
   if(!changes.length){showToast('所选元素已按此方式排列');return;}
-  commitChanges(changes);refreshSelection();updateResizeHandle();
+  if(!commitChanges(changes))return;
+  refreshSelection();updateResizeHandle();
   showToast('已调整所选元素位置，可一次撤销');
 }
 for(const button of document.querySelectorAll('[data-selection-layout]'))
@@ -289,9 +363,24 @@ function nudgeSelection(direction, step=1) {
   commitChanges(changes);updateMovementReadout();
 }
 function handleEditorKey(event) {
+  if((event.metaKey || event.ctrlKey) && event.key.toLowerCase()==='s' && !event.altKey && !event.shiftKey) {
+    event.preventDefault();event.stopImmediatePropagation();
+    if(!projectReady || sourceBusy || document.querySelector('dialog[open]'))return;
+    event.target.blur?.();commitCardForm();void saveToSource();return;
+  }
   if(document.getElementById('source-dialog')?.open || document.getElementById('comparison-dialog')?.open)return;
   if(document.getElementById('history-dialog')?.open)return;
-  if(event.key==='Escape') {cancelMovement();return;}
+  if(event.key==='Escape') {
+    const activeGesture=!!(moveGesture || sweepGesture || resizeGesture);
+    cancelMovement();
+    finishResize(false);
+    if(!activeGesture && mode==='edit' && selectedElements.size
+      && !document.querySelector('dialog[open]')
+      && !event.target.closest?.('input,textarea,select,[contenteditable="true"],#editor-change-overlay,.container-picker-menu')) {
+      commitCardForm();clearSelection();event.preventDefault();
+    }
+    return;
+  }
   if(event.target.closest?.('input,textarea,select,[contenteditable="true"]') || event.target.closest?.('#editor-change-overlay,.container-picker-menu'))return;
   if((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && mode==='edit') {
     const key=event.key.toLowerCase();
@@ -320,10 +409,12 @@ function setPointerMode(value) {
     const button=document.getElementById(`pointer-${name}`);
     button.classList.toggle('active',value===name);button.setAttribute('aria-pressed',String(value===name));
   }
-  frameDocument()?.body?.classList.toggle('ve-pointer-move',!!value);
+  frameDocument()?.body?.classList.toggle('ve-pointer-move',value==='move' || value==='swap');
+  frameDocument()?.body?.classList.remove('ve-pointer-select');
 }
 function cancelMovement() {
   document.getElementById('editor-alignment-guides')?.remove();
+  if(sweepGesture)finishSweepSelection(null,true);
   if(!moveGesture)return;
   for(const {element,original} of moveGesture.elements) element.style.translate=original;
   for(const entry of moveGesture.elements) {
@@ -335,8 +426,83 @@ function cancelMovement() {
   try {moveGesture.capture.releasePointerCapture(moveGesture.pointerId);}catch{}
   moveGesture=null;updateMovementReadout();updateResizeHandle();
 }
+// Keep the canvas layout stable while sweeping: open/update the inspector only
+// after release, so selecting the first component cannot shift the pointer path.
+function sweepCandidates() {
+  const doc=frameDocument();
+  const nodes=[...doc.body.querySelectorAll('*')].filter(node=>{
+    if(node.closest('script,style,template,[hidden],[data-ve-locked],[contenteditable="true"],#editor-change-overlay,#editor-box-selection') || node.closest('svg')!==null && !node.matches('svg'))return false;
+    return node.matches(`${CARD_SELECTOR},button,a,input,textarea,select,svg,img,canvas,video`)
+      || [...node.childNodes].some(child=>child.nodeType===3 && child.textContent.trim())
+      || (node.matches('div') && !node.childElementCount);
+  });
+  const roots=nodes.filter(node=>!nodes.some(other=>other!==node && other.contains(node)));
+  return roots.map(node=>({node,rect:node.getBoundingClientRect()})).filter(({node,rect})=>rect.width>0 && rect.height>0 && rect.bottom>0 && rect.top<doc.defaultView.innerHeight && doc.defaultView.getComputedStyle(node).visibility!=='hidden');
+}
+function sweepPath(from,to) {
+  for(const {node,rect} of sweepGesture.candidates) {
+    if(!node.isConnected || selectedElements.has(node) || !segmentIntersectsRect(from,to,rect))continue;
+    if([...selectedElements].some(other=>node.contains(other)))continue;
+    for(const other of selectedElements)if(other.contains(node)){other.classList.remove('ve-selected');selectedElements.delete(other);}
+    selectedElements.add(node);selectedElement=node;node.classList.add('ve-selected');
+  }
+}
+function activateSweepSelection() {
+  if(!sweepGesture || sweepGesture.moved)return;
+  sweepGesture.moved=true;sweepGesture.candidates=sweepCandidates();
+  if(!sweepGesture.additive){selectedElements.forEach(node=>node.classList.remove('ve-selected'));selectedElements.clear();selectedElement=null;}
+  clearHover();document.getElementById('text-toolbar').hidden=true;
+  frameDocument().body.classList.add('ve-pointer-select');
+  sweepPath(sweepGesture.start,sweepGesture.start);
+}
+function beginSweepSelection(event) {
+  suppressNextClick=false;
+  if(pointerMode!=='move' || mode!=='edit' || event.button!==0 || event.altKey || event.target.closest?.('input,textarea,select,[contenteditable="true"],#editor-change-overlay,#editor-box-selection'))return;
+  commitCardForm();clearHover();
+  sweepGesture={pointerId:event.pointerId,capture:frameDocument().body,start:{x:event.clientX,y:event.clientY},last:{x:event.clientX,y:event.clientY},before:[...selectedElements],primary:selectedElement,additive:event.shiftKey,moved:false,target:pickCanvasTarget(event),down:event};
+  sweepGesture.timer=setTimeout(activateSweepSelection,280);
+  sweepGesture.capture.setPointerCapture(event.pointerId);
+  frame.contentWindow.focus();event.preventDefault();event.stopImmediatePropagation();
+}
+function updateSweepSelection(event) {
+  if(!sweepGesture || event.pointerId!==sweepGesture.pointerId)return;
+  const gesture=sweepGesture;
+  if(!gesture.moved) {
+    if(Math.hypot(event.clientX-gesture.start.x,event.clientY-gesture.start.y)<4)return;
+    clearTimeout(gesture.timer);
+    if(gesture.target && !gesture.additive) {
+      // A quick drag moves the selection. Holding first starts selection instead.
+      sweepGesture=null;
+      try{gesture.capture.releasePointerCapture(gesture.pointerId);}catch{}
+      beginPointerMovement(gesture.down);updatePointerMovement(event);
+      return;
+    }
+    activateSweepSelection();
+  }
+  sweepPath(gesture.last,{x:event.clientX,y:event.clientY});
+  gesture.last={x:event.clientX,y:event.clientY};
+  event.preventDefault();event.stopImmediatePropagation();
+}
+function finishSweepSelection(event,cancel=false) {
+  if(!sweepGesture || (event && event.pointerId!==sweepGesture.pointerId))return;
+  if(event && !cancel && sweepGesture.moved)sweepPath(sweepGesture.last,{x:event.clientX,y:event.clientY});
+  const gesture=sweepGesture;sweepGesture=null;clearTimeout(gesture.timer);
+  frameDocument()?.body?.classList.remove('ve-pointer-select');
+  try{gesture.capture.releasePointerCapture(gesture.pointerId);}catch{}
+  suppressNextClick=true;if(!cancel)setTimeout(()=>{suppressNextClick=false;},0);
+  if(cancel) {
+    selectedElements.forEach(node=>node.classList.remove('ve-selected'));
+    selectedElements=new Set(gesture.before.filter(node=>node.isConnected));selectedElement=gesture.primary;
+  } else if(!gesture.moved && event) {
+    const target=pickCanvasTarget(event);
+    if(target)selectElement(target,{additive:event.shiftKey});
+    else {commitCardForm();clearSelection();}
+  }
+  if(selectedElements.size)refreshSelection();else clearSelection();
+  if(event){event.preventDefault();event.stopImmediatePropagation();}
+}
 function beginPointerMovement(event) {
-  if(!pointerMode || mode!=='edit' || event.button!==0 || event.shiftKey || event.target.closest?.('input,textarea,[contenteditable="true"],#editor-change-overlay,#editor-box-selection'))return;
+  if(!['move','swap'].includes(pointerMode) || mode!=='edit' || event.button!==0 || event.shiftKey || event.altKey || event.target.closest?.('input,textarea,[contenteditable="true"],#editor-change-overlay,#editor-box-selection'))return;
   const target=pickCanvasTarget(event);
   if(!target || !target.parentElement || target===frameDocument().body || isLocked(target))return;
   document.activeElement?.blur();
@@ -347,6 +513,8 @@ function beginPointerMovement(event) {
   if(pointerMode==='swap' && selectedElements.size!==1){showToast('换位时请只选择一个元素');return;}
   clearTimeout(mutationTimer);
   const roots=selectedList().filter(node=>!selectedList().some(other=>other!==node && other.contains(node)));
+  if(roots.some(node=>!allowChange(node)))return;
+  if(pointerMode==='swap' && !allowReorder(target.parentElement))return;
   moveGesture={x:event.clientX,y:event.clientY,pointerId:event.pointerId,capture:target,elements:roots.map(element=>({element,origin:translationFor(element),original:element.style.translate})),moved:false,swapTarget:null};
   moveGesture.references=alignmentReferences();
   target.setPointerCapture(event.pointerId);
@@ -497,12 +665,13 @@ function endPointerMovement(event) {
     else if(gesture.swapTarget?.isConnected) {
       const a=gesture.elements[0].element,b=gesture.swapTarget,parent=a.parentElement;
       if(b.parentElement===parent) {
-        const placeholder=frameDocument().createComment('swap');
-        parent.replaceChild(placeholder,a);parent.replaceChild(a,b);parent.replaceChild(b,placeholder);
+        const order=[...parent.children].filter(node=>node.tagName!=='TEMPLATE');
+        const aIndex=order.indexOf(a),bIndex=order.indexOf(b);
+        order[aIndex]=b;order[bIndex]=a;
         const parentSelector=selectorFor(parent);
-        const changes=[...parent.children].filter(node=>node.tagName!=='TEMPLATE').map((element,index)=>({element,position:{parent:parentSelector,index}}));
+        const changes=order.map((element,index)=>({element,position:{parent:parentSelector,index}}));
         changes.push({element:a,styles:{translate:'0px 0px'}},{element:b,styles:{translate:'0px 0px'}});
-        commitChanges(changes);showToast('同级元素已交换，可一次撤销');
+        if(commitChanges(changes))showToast('同级元素已交换，可一次撤销');
       }
     } else showToast('未命中同级元素，已保留原位置');
   }
@@ -545,7 +714,7 @@ async function initializeProjectState() {
     state = createEditorState(mergeProjectAndDraft(project, browserDraft, draftIsDirty));
     persistState(draftIsDirty && Object.keys(browserDraft.patches || {}).length
       ? '已恢复未保存的浏览器草稿'
-      : '已加载项目调整', { dirty: draftIsDirty });
+      : Object.keys(state.patches).length?'存在未写入源码的项目调整，请保存或完成 AI 待办后交付':'已加载项目源码', { dirty: draftIsDirty });
   } catch (error) {
     saveStatus.textContent = `项目服务未连接，仅保留浏览器草稿：${error.message}`;
   }
@@ -583,7 +752,6 @@ function elementKey(selector) {
 function editableTarget(target) {
   if (!(target instanceof frame.contentWindow.Element)) return null;
   if (target.closest('#editor-change-overlay')) return null;
-  if (target.closest('[data-ve-dynamic]')) return null;
   const selector = [
     '[data-ve-node]', '[data-ve-editable]', '.panel', '.ha-metric', '.ha-overtime-card', '.ha-section', '.ha-topic', '.ha-care',
     '.ha-business-role', '.finance-kpi', '.finance-stat', '.finance-block', '.procurement-metric',
@@ -1187,6 +1355,7 @@ function injectEditorStyles(doc) {
     body.ve-edit-mode .ve-container-preview { outline:3px solid #e34299 !important; outline-offset:-3px !important; }
     body.ve-edit-mode .ve-drop-target { outline:3px solid #13a67b !important; outline-offset:3px !important; background-color:#ecfcf5 !important; }
     body.ve-edit-mode.ve-pointer-move .ve-selected { cursor:move !important; touch-action:none; }
+    body.ve-edit-mode.ve-pointer-select, body.ve-edit-mode.ve-pointer-select * { cursor:crosshair !important; user-select:none !important; touch-action:none; }
     body.ve-edit-mode .ve-dragging { opacity:.45 !important; }
     body.ve-edit-mode [contenteditable="true"] { cursor:text !important; outline:2px solid #18a57b !important; background:#effcf8 !important; color:#29435d !important; }
     body.ve-preview-mode .ve-selected, body.ve-preview-mode .ve-hover { outline:0 !important; box-shadow:none !important; }
@@ -1233,7 +1402,10 @@ function setupFrame() {
   doc.body.classList.toggle('ve-pointer-move',mode==='edit' && !!pointerMode);
   prepareReorderables(doc);
 
-  doc.addEventListener('scroll',()=>{clearHover();if(moveGesture)cancelMovement();updateResizeHandle();},true);
+  doc.addEventListener('scroll',()=>{clearHover();if(moveGesture || sweepGesture)cancelMovement();updateResizeHandle();},true);
+  doc.addEventListener('pointerdown', beginSweepSelection, true);
+  doc.addEventListener('pointermove', updateSweepSelection, true);
+  doc.addEventListener('pointerup', finishSweepSelection, true);
   doc.addEventListener('pointerdown', beginPointerMovement, true);
   doc.addEventListener('pointermove', updatePointerMovement, true);
   doc.addEventListener('pointerup', endPointerMovement, true);
@@ -1257,7 +1429,8 @@ function setupFrame() {
       patchEngine.capture();
       applyAllPatches();
       prepareReorderables(doc);
-      if(selectedElements.size && selectedList().length!==selectedElements.size)refreshSelection();
+      updateSaveability();
+      if(selectedElements.size)refreshSelection();
     }, 80);
   });
   patchObserver = observer;
@@ -1266,6 +1439,7 @@ function setupFrame() {
   applyAllPatches();
   prepareReorderables(doc);
   clearSelection();
+  updateSaveability();
   if (showChanges) renderChangeMarkers();
 }
 
@@ -1273,9 +1447,11 @@ function handleFrameClick(event) {
   if (suppressNextClick) {event.preventDefault();event.stopImmediatePropagation();return;}
   if (mode !== 'edit') return;
   if(event.target.closest?.('[contenteditable="true"]'))return;
-  const target = pickCanvasTarget(event);
+  const choices=event.altKey && !event.shiftKey ? pickElementsAtPoint(frameDocument(),event.clientX,event.clientY,{cardSelector:CARD_SELECTOR,exact:true}) : null;
+  const index=choices?.indexOf(selectedElement) ?? -1;
+  const target=choices ? choices[(index+1)%choices.length] : pickCanvasTarget(event);
   if (!target) {
-    if(event.target.closest?.('[data-ve-locked],[data-ve-dynamic],#editor-change-overlay,#editor-box-selection')){event.preventDefault();event.stopImmediatePropagation();return;}
+    if(event.target.closest?.('[data-ve-locked],#editor-change-overlay,#editor-box-selection')){event.preventDefault();event.stopImmediatePropagation();return;}
     commitCardForm();clearSelection();
     return;
   }
@@ -1293,7 +1469,7 @@ function clearHover() {
   document.getElementById('editor-hover-label')?.remove();
 }
 function handleFrameHover(event) {
-  if(mode!=='edit' || moveGesture || draggedElement || resizeGesture)return;
+  if(mode!=='edit' || moveGesture || sweepGesture || draggedElement || resizeGesture)return;
   const target=pickCanvasTarget(event);
   if(target===hoveredElement)return;
   clearHover();
@@ -1317,6 +1493,8 @@ function handleFrameDoubleClick(event) {
   event.preventDefault();
   event.stopImmediatePropagation();
   selectElement(target);
+  if(!allowChange(target,{text:target.textContent.trim()}))return;
+  const originalText=target.textContent;
   target.contentEditable = 'true';
   target.focus();
   const range = frameDocument().createRange();
@@ -1326,8 +1504,10 @@ function handleFrameDoubleClick(event) {
   selection.addRange(range);
 
   const finish = () => {
+    const text=target.textContent.trim();
     target.contentEditable = 'false';
-    commitElementChange(target, { text: target.textContent.trim() });
+    target.textContent=originalText;
+    commitElementChange(target, { text });
     target.removeEventListener('blur', finish);
   };
   target.addEventListener('blur', finish);
@@ -1348,6 +1528,7 @@ function handleDragStart(event) {
     event.preventDefault();
     return;
   }
+  if(!allowReorder(target.parentElement)){event.preventDefault();return;}
   clearTimeout(mutationTimer);
   draggedElement = target;
   selectElement(target);
@@ -1373,6 +1554,7 @@ function handleDrop(event) {
   if (!draggedElement) return;
   event.preventDefault();
   const parent = draggedElement.parentElement;
+  if(!allowReorder(parent)){draggedElement=null;reloadFrame();return;}
   rememberSiblingOrder(parent);
   persistState();
   draggedElement.classList.remove('ve-dragging');
@@ -1410,9 +1592,10 @@ function refreshSelection() {
   if(!selectedElements.size){clearSelection();return;}
   if(!selectedElements.has(selectedElement))selectedElement=[...selectedElements].at(-1);
   for(const element of selectedElements) {element.classList.remove('ve-hover');element.classList.add('ve-selected');}
+  restoreSaveabilityControls();
   editorMain.classList.add('inspector-open');inspectorFields.hidden=false;resizeCanvas();
   selectedName.textContent=selectedElements.size>1 ? `已选择 ${selectedElements.size} 个元素` : elementLabel(selectedElement);
-  updateSelectionControls(selectedElement);renderCardForm(selectedElement);fillInspector(selectedElement);updateMovementReadout();fillStructureInspector();scheduleLayers();
+  updateSelectionControls(selectedElement);renderCardForm(selectedElement);fillInspector(selectedElement);updateMovementReadout();fillStructureInspector();renderSaveability();scheduleLayers();
   requestAnimationFrame(updateTextToolbar);
 }
 function clearSelection() {
@@ -1434,7 +1617,7 @@ function rgbToHex(color, fallback = '#ffffff') {
 }
 
 function editableTextTargets(element) {
-  if(selectedElements.size!==1 || isLocked(element) || element.closest('[data-ve-dynamic]'))return [];
+  if(selectedElements.size!==1 || isLocked(element))return [];
   return textTargetsForElement(element,frameDocument());
 }
 function fillInspector(element) {
@@ -1469,13 +1652,15 @@ function fillInspector(element) {
 function commitElementChange(element, change) {
   const selector = selectorFor(element);
   const key = elementKey(selector);
-  state = upsertElementPatch(state, key, { selector, ...change });
+  const entry={selector,...change};if(!allowEntries([[key,entry]]))return false;
+  state = upsertElementPatch(state, key, entry);
   applyAllPatches();
   persistState();
 }
 
 function applyAllPatches() {
   if (!patchEngine) return;
+  routePendingEdits();
   patchEngine.apply(mergeSourcePatches(readSourcePatches(frameDocument()), state.patches));
   // MutationObserver callbacks run asynchronously; a boolean guard is insufficient.
   patchObserver?.takeRecords();
@@ -1515,7 +1700,8 @@ function updateSelectedStyle(styles) {
 function updateTextToolbar() {
   const toolbar=document.getElementById('text-toolbar');
   const visible=mode==='edit' && selectedElements.size===1 && selectedElement?.isConnected && !isLocked(selectedElement)
-    && !selectedElement.closest('[data-ve-dynamic]') && isTextToolbarTarget(selectedElement);
+    && isTextToolbarTarget(selectedElement)
+;
   toolbar.hidden=!visible;
   if(!visible)return;
   const style=frame.contentWindow.getComputedStyle(selectedElement);
@@ -1592,11 +1778,12 @@ function download(name, content, type) {
 
 async function exportHtml() {
   commitCardForm();
+  if(!await saveToSource())return;
   if(projectId !== 'builtin') {
-    const response=await fetch(projectEndpoint('/api/projects/export'),{method:'POST',headers:{'content-type':'application/json'},body:serializeEditorState(state)});
+    const response=await fetch(projectEndpoint('/api/projects/export'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({version:1,patches:{},sourceOnly:true})});
     if(!response.ok)throw new Error((await response.json()).error || '项目导出失败');
     download(`${projectConfig.name}-edited.zip`,await response.blob(),'application/zip');
-    showToast('已导出包含资源的项目副本，原文件未修改');return;
+    showToast('已保存原文件并导出开发源码 ZIP（含本地资源）');return;
   }
   const response = await fetch('../prototype.html');
   const source = await response.text();
@@ -1631,6 +1818,7 @@ function moveSelected(offset) {
   const currentIndex = siblings.indexOf(selectedElement);
   const nextIndex = Math.max(0, Math.min(siblings.length - 1, currentIndex + offset));
   if (nextIndex === currentIndex) return;
+  if(!allowReorder(parent))return;
   const reference = offset < 0 ? siblings[nextIndex] : siblings[nextIndex].nextSibling;
   parent.insertBefore(selectedElement, reference);
   rememberSiblingOrder(parent);persistState();updateOrderControls();scheduleLayers();updateResizeHandle();
@@ -1643,10 +1831,11 @@ helpToggle.addEventListener('click', () => setHelpOpen(helpToggle.getAttribute('
 document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
   commitCardForm();
   mode = button.dataset.mode;
+  editorMain.classList.toggle('editing-mode',mode==='edit');
   setPointerMode(mode==='edit'?'move':'');
   document.querySelectorAll('[data-mode]').forEach(item => item.classList.toggle('active', item === button));
   document.getElementById('mode-label').textContent = mode === 'edit' ? '编辑模式' : '预览模式';
-  document.getElementById('mode-hint').textContent = mode === 'edit' ? ' · Shift 单击多选' : ' · 可直接操作页面';
+  document.getElementById('mode-hint').textContent = mode === 'edit' ? ' · 长按左键滑动多选 · Shift 追加选择' : ' · 可直接操作页面';
   if(mode==='edit')setLayersOpen(true);
   const doc = frameDocument();
   doc.body.classList.toggle('ve-edit-mode', mode === 'edit');
@@ -1720,6 +1909,7 @@ function deleteSelection() {
   if (mode!=='edit' || !selectedElement || selectedList().some(isLocked)) return;
   cancelMovement();
   cardInputs=[];
+  if(selectedList().some(element=>!allowChange(element,{deleted:true})))return;
   const previous=state;
   for(const element of selectedList()) {
     const selector=selectorFor(element);
@@ -1756,7 +1946,9 @@ document.getElementById('import-file').addEventListener('change', async event =>
   const file = event.target.files[0];
   if (!file) return;
   try {
-    state = createEditorState(JSON.parse(await file.text()));
+    const imported=createEditorState(JSON.parse(await file.text()));
+    if(!allowEntries(Object.entries(imported.patches))){event.target.value='';exportMenu.hidden=true;return;}
+    state=imported;
     persistState('导入成功，正在刷新画布');
     reloadFrame();
     showToast('调整 JSON 已导入');
@@ -1776,12 +1968,14 @@ async function sourceRequest(path,body) {
   const value=await response.json();if(!response.ok)throw new Error(value.error||'源码操作失败');return value;
 }
 function rememberSource(value) {
+  loadedSourceDocument=new DOMParser().parseFromString(value.source,'text/html');
   sourceBaseline={source:value.source,revision:value.revision,hashes:value.hashes,entry:value.entry};
   loadedSourceRevision=value.revision;
   localStorage.setItem(SOURCE_BASE_KEY,JSON.stringify(sourceBaseline));
 }
 async function initializeSourceState() {
   const current=await sourceRequest('/api/source-state');
+  loadedSourceDocument=new DOMParser().parseFromString(current.source,'text/html');
   const saved=localStorage.getItem(SOURCE_BASE_KEY);
   if(saved && localStorage.getItem(DRAFT_DIRTY_KEY)==='1') {
     try{sourceBaseline=JSON.parse(saved);}catch{rememberSource(current);}
@@ -1797,13 +1991,14 @@ function sourceModal(title) {
 document.getElementById('source-dialog-close').onclick=()=>{if(!sourceBusy)sourceDialog.close();};
 sourceDialog.addEventListener('cancel',event=>{if(sourceBusy)event.preventDefault();});
 async function saveToSource(choices={},checkedRevision=null) {
-  if(sourceBusy)return;
+  if(sourceBusy)return false;
   sourceModal('保存到源码');sourceBusy=true;
   try {
     const current=await sourceRequest('/api/source-state');
     if(!sourceBaseline)rememberSource(current);
     if(checkedRevision && current.revision!==checkedRevision)choices={};
-    const result=compileSource({base:sourceBaseline,current,patches:state.patches,choices,projectId});
+    const routes=routePendingEdits(new DOMParser().parseFromString(current.source,'text/html'));
+    const result=compileSource({base:sourceBaseline,current,patches:routes.direct,choices,projectId});
     if(result.conflicts.length) {
       sourceStatus.textContent='检测到双方修改了相同内容。请逐项选择；未冲突的代码会保留。';
       for(const item of result.conflicts) {
@@ -1818,18 +2013,23 @@ async function saveToSource(choices={},checkedRevision=null) {
       sourceConfirm.hidden=false;sourceConfirm.textContent='按以上选择保存';sourceConfirm.disabled=true;
       sourceConflicts.onchange=()=>{sourceConfirm.disabled=[...sourceConflicts.querySelectorAll('select')].some(select=>!select.value);};
       sourceConfirm.onclick=()=>saveToSource({...choices,...Object.fromEntries([...sourceConflicts.querySelectorAll('select')].map(select=>[select.dataset.conflict,select.value]))},current.revision);
-      return;
+      return false;
     }
     if (result.unsupported.length) {
       sourceStatus.textContent = `无法安全保存以下修改，草稿已保留：${result.unsupported.join('；')}`;
-      return;
+      return false;
     }
     sourceStatus.textContent=`正在备份并写入 ${projectEntry}…`;
-    const saved=await sourceRequest('/api/source-save',{revision:current.revision,html:result.html,draft:{version:1,patches:state.patches}});
-    state=createEditorState({});
-    rememberSource(saved);clearSelection();persistState(`已写入 ${projectEntry}，历史版本已备份`,{dirty:false});reloadFrame();
-    document.getElementById('source-change-banner').hidden=true;sourceDialog.close();showToast('已写入项目源码，Codex 可直接读取修改');
-  }catch(error){sourceStatus.textContent=`未完成保存：${error.message}。草稿已保留。`;}
+    const saved=await sourceRequest('/api/source-save',{revision:current.revision,html:result.html,draft:{version:1,patches:state.patches},pending:{version:1,patches:routes.pending}});
+    state=createEditorState({patches:routes.pending});
+    const pendingCount=Object.keys(routes.pending).length;
+    const savedPath=`${projectConfig.root}/${projectEntry}`;
+    const message=pendingCount?`部分保存到 ${savedPath}；${pendingCount} 项未写入源码（AI 待办），暂不可交付`:`已写入本地文件 ${savedPath}，历史版本已备份`;
+    rememberSource(saved);clearSelection();persistState(message,{dirty:false});reloadFrame();saveStatus.textContent=message;
+    document.getElementById('source-change-banner').hidden=true;sourceDialog.close();showToast(Object.keys(routes.pending).length?'可直接写入的修改已保存，其余已进入 AI 待办':'已写入项目源码');
+    if(Object.keys(routes.pending).length)setTimeout(()=>openAI(true),0);
+    return pendingCount===0;
+  }catch(error){sourceStatus.textContent=`未完成保存：${error.message}。草稿已保留。`;return false;}
   finally{sourceBusy=false;}
 }
 async function refreshSource() {
@@ -1839,6 +2039,7 @@ async function refreshSource() {
   commitCardForm();
   try {
     const current=await sourceRequest('/api/source-state');
+    loadedSourceDocument=new DOMParser().parseFromString(current.source,'text/html');
     if(localStorage.getItem(DRAFT_DIRTY_KEY)!=='1')rememberSource(current);
     loadedSourceRevision=current.revision;
     document.getElementById('source-change-banner').hidden=true;
@@ -1989,7 +2190,7 @@ let treeDragElement = null;
 const layerSearch = document.getElementById('layer-search');
 const layerTree = document.getElementById('layer-tree');
 const containerSelector = 'div,section,article,main,aside,header,footer,nav,ul,ol';
-function isContainer(node) { return !!node?.matches(containerSelector) && !node.closest('svg,#editor-change-overlay,[data-ve-dynamic]'); }
+function isContainer(node) { return !!node?.matches(containerSelector) && !node.closest('svg,#editor-change-overlay'); }
 function isLocked(node) { return !!node?.closest('[data-ve-locked]'); }
 function structureAllowed(node) { return node && !node.matches('body,.cockpit-view,.drawer,svg,svg *') && !isLocked(node); }
 function layerChildren(node) {
@@ -2101,7 +2302,8 @@ function moveInto(node,parent) {
   const newOrder=[...parent.children].filter(item=>item.tagName!=='TEMPLATE').concat(node);
   const changes=[];
   for(const [container,order] of [[oldParent,oldOrder],[parent,newOrder]])order.forEach((element,index)=>changes.push({element,position:{parent:selectorFor(container),index}}));
-  commitChanges(changes);expandedLayers.add(selectorFor(parent));selectElement(node);showToast('已移入目标容器，可撤销');
+  if(!commitChanges(changes))return;
+  expandedLayers.add(selectorFor(parent));selectElement(node);showToast('已移入目标容器，可撤销');
 }
 document.getElementById('toggle-element-visibility').onclick=()=>{if(selectedElement)toggleConcealed(selectedElement);};
 document.getElementById('add-table-row').onclick=()=>{
@@ -2109,7 +2311,7 @@ document.getElementById('add-table-row').onclick=()=>{
   const context=tableRowContext(selectedElement);
   if(!context || isLocked(context.body) || isLocked(context.template))return;
   commitCardForm();
-  insertSnapshot(prepareSnapshot(blankTableRow(context.template)),context.body,context.index);
+  if(!insertSnapshot(prepareSnapshot(blankTableRow(context.template)),context.body,context.index))return;
   showToast('已添加空白行，可撤销');
 };
 document.getElementById('delete-table-row').onclick=()=>{
@@ -2118,6 +2320,7 @@ document.getElementById('delete-table-row').onclick=()=>{
   if(!context?.row || isLocked(context.row))return;
   commitCardForm();
   const selector=selectorFor(context.row);
+  if(!allowChange(context.row,{deleted:true}))return;
   state=deleteElement(state,elementKey(selector),selector);
   applyAllPatches();persistState();clearSelection();
   showToast('已删除表格行，可撤销');
@@ -2135,7 +2338,7 @@ document.getElementById('add-table-column').onclick=()=>{
       spanChanges.push([elementKey(selector),{selector,attributes:{colspan:String(target.spanCell.colSpan+1)}}]);
     } else if(target.source)items.push({copy:prepareSnapshot(blankTableCell(target.source)),parent:row,index:target.index});
   }
-  insertSnapshots(items,spanChanges);
+  if(!insertSnapshots(items,spanChanges))return;
   showToast('已添加空白列，可撤销');
 };
 document.getElementById('delete-table-column').onclick=()=>{
@@ -2151,6 +2354,7 @@ document.getElementById('delete-table-column').onclick=()=>{
       ? {selector,attributes:{colspan:String(node.colSpan-1)}}
       : {selector,deleted:true}]];
   });
+  if(!allowEntries(entries))return false;
   state=batchElementChanges(state,entries);
   applyAllPatches();persistState();clearSelection();
   showToast('已删除表格列，可撤销');
@@ -2183,14 +2387,16 @@ function insertSnapshots(items,extraEntries=[]) {
       entries.push([elementKey(key),{selector:key,position:{parent:parentSelector,index:position>=index?position+1:position}}]);
     });
   }
+  if(!allowEntries(entries))return false;
   state=batchElementChanges(state,entries);applyAllPatches();persistState();prepareReorderables(frameDocument());
   const last=items.at(-1);
   const inserted=last && patchEngine.resolve(`[data-ve-node="${last.copy.dataset.veNode}"]`);
   for(const {parent} of items)expandedLayers.add(selectorFor(parent));
   if(inserted)selectElement(inserted);
+  return true;
 }
 function insertSnapshot(copy,parent,index) {
-  insertSnapshots([{copy,parent,index}]);
+  return insertSnapshots([{copy,parent,index}]);
 }
 let componentClipboard=null;
 function copyComponent() {
@@ -2210,14 +2416,14 @@ function pasteComponent() {
   const source=patchEngine.resolve(componentClipboard.source);
   const anchor=selectedElement?.parentElement===parent?selectedElement:source;
   const index=siblings.indexOf(anchor);
-  insertSnapshot(copy,parent,index<0?siblings.length:index+1);
+  if(!insertSnapshot(copy,parent,index<0?siblings.length:index+1))return;
   showToast('已粘贴组件副本，可拖动调整位置');
 }
 document.getElementById('duplicate-element').onclick=()=>{
   if(selectedElements.size!==1 || !structureAllowed(selectedElement))return;
   commitCardForm();ensureEditMode();
   const node=selectedElement,parent=node.parentElement;
-  insertSnapshot(prepareSnapshot(node),parent,[...parent.children].filter(item=>item.tagName!=='TEMPLATE').indexOf(node)+1);
+  if(!insertSnapshot(prepareSnapshot(node),parent,[...parent.children].filter(item=>item.tagName!=='TEMPLATE').indexOf(node)+1))return;
   showToast('已复制，可独立修改文字与布局');
 };
 const componentTemplates={
@@ -2255,6 +2461,8 @@ function handlePaletteOver(event) {
 function addPlacedComponent(type,parent,x,y,imageData=null) {
   commitCardForm();ensureEditMode();
   const doc=frameDocument();
+  const parentStatus=saveabilityChecker()?.target(selectorFor(parent));
+  if(!parentStatus){showToast('尚未读取源码');return;}
   const template=doc.createElement('template');template.innerHTML=type==='image'?'<img alt="本地图片" style="height:auto;object-fit:contain;display:block" />':componentTemplates[type];
   if(imageData) {template.content.firstElementChild.src=imageData.url;template.content.firstElementChild.alt=imageData.name;}
   const copy=prepareSnapshot(template.content.firstElementChild);
@@ -2270,7 +2478,7 @@ function addPlacedComponent(type,parent,x,y,imageData=null) {
   const top=y-rect.top-(initial?0:block.clientTop)+(initial?doc.defaultView.scrollY:block.scrollTop);
   copy.remove();
   Object.assign(copy.style,{left:`${Math.round(left)}px`,top:`${Math.round(top)}px`});
-  insertSnapshot(copy,parent,[...parent.children].filter(node=>node.tagName!=='TEMPLATE').length);
+  if(!insertSnapshot(copy,parent,[...parent.children].filter(node=>node.tagName!=='TEMPLATE').length))return;
   setPointerMode('move');showToast('已放置组件，可拖动微调或撤销');
 }
 function handlePaletteDrop(event) {
@@ -2364,6 +2572,7 @@ function finishResize(commit) {
 const resizeHandle=document.getElementById('element-resize-handle');
 resizeHandle.addEventListener('pointerdown',event=>{
   if(!selectedElement || isLocked(selectedElement))return;
+  if(!allowChange(selectedElement))return;
   commitCardForm();cancelMovement();
   const style=frame.contentWindow.getComputedStyle(selectedElement),rect=selectedElement.getBoundingClientRect();
   resizeGesture={element:selectedElement,x:event.clientX,y:event.clientY,scale:frame.getBoundingClientRect().width/frame.clientWidth,width:parseFloat(style.width)||rect.width,height:parseFloat(style.height)||rect.height,before:{width:selectedElement.style.width,height:selectedElement.style.height}};
@@ -2478,7 +2687,7 @@ async function initializeProjectContext() {
     document.getElementById('remove-project-button').disabled=projectId==='builtin';
     const pages=document.getElementById('page-select');pages.replaceChildren(...current.pages.map(entry=>new Option(entry,entry)));pages.value=current.entry;
     const path=document.getElementById('project-path');path.textContent=current.root;path.title=current.root;
-    document.getElementById('export-html-button').textContent=projectId==='builtin'?'导出可运行 HTML':'导出项目 ZIP（含资源）';
+    document.getElementById('export-html-button').textContent=projectId==='builtin'?'保存并导出可运行 HTML':'保存并导出开发源码 ZIP';
     return true;
   } catch(error) {
     showProjectError(error.message.includes('欢迎使用') ? error.message : `${error.message}。请重新打开项目文件夹；若刚更新编辑器，请重启本地服务。`);
@@ -2495,3 +2704,160 @@ if(await initializeProjectContext()) {
 }
 
 installVersionComparison({projectId,projectEntry,getPages:()=>projectConfig?.pages||[projectEntry],getCurrent:()=>({patches:state.patches}),commit:commitCardForm,getWidth:()=>viewportSizes[viewportName][0]});
+
+
+function routePendingEdits(currentDocument=null) {
+  const checker=saveabilityChecker(),currentChecker=currentDocument && createSaveabilityChecker(currentDocument,state.patches,frameDocument(),state.patches);
+  if(checker)for(const patch of Object.values(state.patches))if('text' in patch){
+    const binding=checker.templateBinding(patch.selector);
+    if(binding){
+      patch.templateText=binding;
+      if(patch.ai?.fields){delete patch.ai.fields.text;if(!Object.keys(patch.ai.fields).length)delete patch.ai;}
+    }
+  }
+  const routes=splitEditRoutes(state.patches,patch=>checker?.check(patch)||currentChecker?.check(patch)||null,(selector,pending)=>selector && Object.values(pending).some(p=>p.insert && (p.selector===selector || frameDocument()?.querySelector(p.selector)?.contains(frameDocument()?.querySelector(selector)))));
+  for(const [key,patch] of Object.entries(routes.pending)) {
+    const element=frameDocument()?.querySelector(patch.selector);
+    if(!Object.keys(patch.ai.context).length)patch.ai.context={path:patch.selector,label:element?elementLabel(element):patch.selector,html:element?.outerHTML.slice(0,15000)||''};
+    state.patches[key]={...state.patches[key],ai:patch.ai};
+  }
+  renderPendingHints(Object.keys(routes.pending).length);
+  return routes;
+}
+const aiDialog=document.getElementById('ai-dialog'),aiStatus=document.getElementById('ai-status'),aiApply=document.getElementById('ai-apply');
+let aiProposal=null,aiFingerprint='',aiBusy=false;
+function pendingFingerprint(){return JSON.stringify(state.patches);}
+async function openAI(auto=false) {
+  if(!aiDialog.open)aiDialog.showModal();
+  const pending=routePendingEdits().pending,list=document.getElementById('ai-pending');list.replaceChildren();
+  const count=Object.keys(pending).length;document.getElementById('ai-pending-count').textContent=count;document.getElementById('ai-empty').hidden=!!count;document.getElementById('ai-generate').disabled=!count;
+  for(const patch of Object.values(pending)) {const row=document.createElement('p');row.textContent=(patch.ai.context.label||patch.selector)+'：'+Object.values(patch.ai.fields).join('；');const details=document.createElement('details'),title=document.createElement('summary'),values=document.createElement('pre');title.textContent='查看修改要求';values.textContent=JSON.stringify(Object.fromEntries(Object.entries(patch).filter(([name])=>!['ai','selector'].includes(name))),null,2);details.append(title,values);list.append(row,details);}
+  try{
+    const settings=await sourceRequest('/api/ai/settings');
+    for(const [id,key] of [['ai-endpoint','endpoint'],['ai-model','model'],['ai-key-env','apiKeyEnv']])document.getElementById(id).value=settings[key]||'';
+    document.getElementById('ai-api-key').value='';document.getElementById('ai-api-key').placeholder=settings.hasAPIKey?'密钥已保存，留空继续使用':'填写供应商提供的 API Key';
+    document.getElementById('ai-http-note').hidden=!document.getElementById('ai-endpoint').value.startsWith('http:');
+    document.getElementById('ai-settings').open=!settings.ready;
+    const connection=document.getElementById('ai-connection');connection.textContent=settings.ready?'已配置':settings.configured?'待设置密钥':'未配置';connection.dataset.ready=String(settings.ready);
+    aiStatus.textContent=Object.keys(pending).length?settings.ready?(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'?'修改已进入待办，生成前会先保存项目。':'待办已保存，可以生成源码修改。'):'请先配置模型接口和 API 密钥。':'还没有需要 AI 写入的修改，点击「去编辑组件」开始。';
+    if(settings.ready)loadAIModels();
+    if(auto && settings.ready)await generateAI();
+  }catch(error){aiStatus.textContent=error.message;}
+}
+document.getElementById('ai-button').onclick=()=>openAI();
+document.getElementById('ai-close').onclick=()=>aiDialog.close();
+document.getElementById('ai-settings-save').onclick=async()=>{
+  try{const value=await sourceRequest('/api/ai/settings',{endpoint:document.getElementById('ai-endpoint').value,model:document.getElementById('ai-model').value,apiKeyEnv:document.getElementById('ai-key-env').value,apiKey:document.getElementById('ai-api-key').value});document.getElementById('ai-key-env').value=value.apiKeyEnv||'';if(value.hasAPIKey){document.getElementById('ai-api-key').value='';document.getElementById('ai-api-key').placeholder='密钥已保存，留空继续使用';}const connection=document.getElementById('ai-connection');connection.textContent=value.ready?'已配置':'待设置密钥';connection.dataset.ready=String(value.ready);aiStatus.textContent=value.ready?'接口设置已保存。':'设置已保存；请设置密钥环境变量并重启服务。';}catch(error){aiStatus.textContent=error.message;}
+};
+async function generateAI() {
+  if(aiBusy)return;
+  if(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'){aiStatus.textContent='正在保存普通修改并保留 AI 待办…';await saveToSource();return;}
+  aiBusy=true;aiApply.disabled=true;aiProposal=null;aiFingerprint=pendingFingerprint();
+  const button=document.getElementById('ai-generate');button.disabled=true;aiStatus.textContent='模型正在修改最新源码…';
+  let baselineFrame=null;
+  try {
+    const proposal=await sourceRequest('/api/ai/generate',{});
+    if(aiFingerprint!==pendingFingerprint())throw new Error('生成期间草稿发生变化，请保存后重新生成');
+    aiProposal=proposal;aiApply.hidden=false;document.getElementById('ai-results').hidden=false;
+    const diff=document.getElementById('ai-diff');diff.replaceChildren();
+    for(const change of proposal.changes){const details=document.createElement('details'),title=document.createElement('summary'),before=document.createElement('pre'),after=document.createElement('pre');title.textContent=change.path+' · 查看修改前后';before.textContent='修改前\n'+change.before;after.textContent='修改后\n'+change.after;details.append(title,before,after);diff.append(details);}
+    aiStatus.textContent='正在检查修改后的页面效果…';
+    const preview=document.getElementById('ai-preview');preview.hidden=false;
+    if(!proposal.baselineUrl)throw new Error('服务未提供原页面验证基线，请重启编辑器服务后重试');
+    baselineFrame=document.createElement('iframe');baselineFrame.dataset.aiBaseline='true';baselineFrame.setAttribute('aria-hidden','true');baselineFrame.tabIndex=-1;
+    Object.assign(baselineFrame.style,{position:'fixed',left:'-10000px',top:'0',width:`${preview.clientWidth}px`,height:`${preview.clientHeight}px`,border:'0',pointerEvents:'none'});
+    await Promise.all([loadAIFrame(preview,proposal.previewUrl),loadAIFrame(baselineFrame,proposal.baselineUrl,document.body)]);
+    let failures=[],stable=0;
+    for(let attempt=0;attempt<20;attempt++){await new Promise(resolve=>setTimeout(resolve,250));failures=await verifyAIPage(preview.contentDocument,proposal.pending);stable=failures.length?0:stable+1;if(stable>=4)break;}
+    if(stable<4 && !failures.length)failures.push('修改后的页面效果尚未稳定，请重试');
+    const previewErrors=preview.contentWindow.__veAIErrors,baselineErrors=baselineFrame.contentWindow.__veAIErrors;
+    if(!Array.isArray(previewErrors) || !Array.isArray(baselineErrors))throw new Error('无法读取预览或原页面的错误基线，请重新生成');
+    const errorChanges=compareAIErrors(previewErrors,baselineErrors);
+    for(const error of errorChanges.introduced.slice(0,5))failures.push('新增脚本或资源错误：'+(typeof error==='string'?error:error.message+(error.url?`（${error.url}）`:'')));
+    if(failures.length)throw new Error('页面效果未通过验证：'+failures.join('；'));
+    aiStatus.textContent=(proposal.explanation||'模型修改已生成')+'。页面效果验证通过，请查看差异和预览后确认写入。'+(errorChanges.inherited.length?`原页面已有 ${errorChanges.inherited.length} 项脚本或资源问题，本次修改未增加这些问题。`:'');aiApply.disabled=false;
+  }catch(error){aiStatus.textContent=error.message+'。已保存的修改不受影响，AI 待办仍保留。';}
+  finally{baselineFrame?.remove();aiBusy=false;button.disabled=false;}
+}
+document.getElementById('ai-generate').onclick=generateAI;
+aiApply.onclick=async()=>{
+  if(!aiProposal || aiBusy)return;
+  if(aiFingerprint!==pendingFingerprint()){aiApply.disabled=true;aiStatus.textContent='草稿已变化，请保存并重新生成。';return;}
+  aiBusy=true;aiApply.disabled=true;
+  try{const saved=await sourceRequest('/api/ai/apply',{id:aiProposal.id,verified:true});state=createEditorState({});rememberSource(saved);clearSelection();persistState('AI 修改已写入源码，历史版本已备份',{dirty:false});reloadFrame();aiDialog.close();aiProposal=null;showToast('AI 修改已写入项目源码');}
+  catch(error){aiStatus.textContent=error.message+'。AI 待办仍保留。';}
+  finally{aiBusy=false;}
+};
+
+
+const aiTestButton=document.getElementById('ai-test'),aiTestResult=document.getElementById('ai-test-result');
+let aiTestSequence=0,aiTestRunning=false;
+for(const id of ['ai-endpoint','ai-model','ai-key-env','ai-api-key'])document.getElementById(id).addEventListener('input',()=>{
+  aiTestSequence++;aiTestResult.hidden=true;
+  const badge=document.getElementById('ai-connection');badge.textContent='待测试';badge.dataset.ready='false';
+});
+aiTestButton.onclick=async()=>{
+  if(aiTestRunning)return;
+  aiTestRunning=true;const sequence=++aiTestSequence;
+  aiTestButton.disabled=true;aiTestButton.textContent='测试中…';aiTestResult.hidden=false;aiTestResult.dataset.kind='loading';aiTestResult.textContent='正在请求模型接口…';
+  const badge=document.getElementById('ai-connection');badge.textContent='测试中';badge.dataset.ready='false';
+  try {
+    const result=await sourceRequest('/api/ai/test',{endpoint:document.getElementById('ai-endpoint').value,model:document.getElementById('ai-model').value,apiKeyEnv:document.getElementById('ai-key-env').value,apiKey:document.getElementById('ai-api-key').value});
+    if(sequence!==aiTestSequence)return;
+    badge.textContent='已连接';badge.dataset.ready='true';aiTestResult.dataset.kind='success';
+    aiTestResult.textContent='已连接 · '+result.elapsedMs+' ms · '+result.model+' — OK';
+  }catch(error){
+    if(sequence!==aiTestSequence)return;
+    badge.textContent='连接失败';badge.dataset.ready='false';aiTestResult.dataset.kind='error';aiTestResult.textContent=error.message;
+  }finally{aiTestRunning=false;aiTestButton.disabled=false;aiTestButton.textContent='测试连接';}
+};
+
+const modelInput=document.getElementById('ai-model'),modelMenu=document.getElementById('ai-model-menu'),modelSearch=document.getElementById('ai-model-search'),modelOptions=document.getElementById('ai-model-options'),modelStatus=document.getElementById('ai-models-status'),modelLoad=document.getElementById('ai-models-load');
+let availableAIModels=[],modelActiveIndex=-1,modelsSequence=0,modelsLoading=false;
+function closeModelMenu(){modelMenu.hidden=true;modelInput.setAttribute('aria-expanded','false');document.getElementById('ai-model-toggle').setAttribute('aria-expanded','false');modelInput.removeAttribute('aria-activedescendant');modelSearch.removeAttribute('aria-activedescendant');}
+function chooseModel(id){modelInput.value=id;modelInput.dispatchEvent(new Event('input',{bubbles:true}));closeModelMenu();modelInput.focus();}
+function renderModelOptions(){
+  const term=modelSearch.value.trim().toLowerCase(),models=availableAIModels.filter(id=>id.toLowerCase().includes(term));modelOptions.replaceChildren();modelActiveIndex=-1;
+  if(!models.length){const empty=document.createElement('p');empty.className='ai-model-list-empty';empty.textContent=availableAIModels.length?'没有匹配的模型，可在模型名称中手动填写。':'请先加载模型列表，也可手动填写模型名称。';modelOptions.append(empty);return;}
+  models.forEach((id,index)=>{const option=document.createElement('button');option.type='button';option.id='ai-model-option-'+index;option.setAttribute('role','option');option.setAttribute('aria-selected',String(id===modelInput.value));option.tabIndex=-1;option.textContent=id;option.onclick=()=>chooseModel(id);modelOptions.append(option);});
+}
+function openModelMenu(focusSearch=false){
+  modelMenu.hidden=false;modelInput.setAttribute('aria-expanded','true');document.getElementById('ai-model-toggle').setAttribute('aria-expanded','true');modelSearch.value='';renderModelOptions();
+  modelMenu.classList.toggle('above',document.getElementById('ai-model-picker').getBoundingClientRect().bottom+275>innerHeight-90);
+  if(focusSearch)modelSearch.focus();
+}
+document.getElementById('ai-model-toggle').onclick=()=>modelMenu.hidden?openModelMenu(true):closeModelMenu();
+modelInput.addEventListener('click',()=>{if(modelMenu.hidden)openModelMenu();});
+modelInput.addEventListener('input',()=>{if(modelMenu.hidden)openModelMenu();modelSearch.value=modelInput.value;renderModelOptions();});
+modelSearch.addEventListener('input',renderModelOptions);
+document.addEventListener('pointerdown',event=>{if(!event.target.closest('#ai-model-picker'))closeModelMenu();});
+for(const input of [modelInput,modelSearch])input.addEventListener('keydown',event=>{
+  if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeModelMenu();modelInput.focus();return;}
+  if(event.key==='Tab'){closeModelMenu();return;}
+  if(!['ArrowDown','ArrowUp','Enter'].includes(event.key))return;
+  if(event.key==='Enter' && modelMenu.hidden)return;
+  event.preventDefault();event.stopPropagation();
+  if(modelMenu.hidden)openModelMenu();
+  const options=[...modelOptions.querySelectorAll('[role="option"]')];if(!options.length)return;
+  if(event.key==='Enter'){if(modelActiveIndex>=0)options[modelActiveIndex].click();return;}
+  modelActiveIndex=(modelActiveIndex+(event.key==='ArrowDown'?1:-1)+options.length)%options.length;
+  options.forEach((option,index)=>option.classList.toggle('active',index===modelActiveIndex));
+  const active=options[modelActiveIndex];input.setAttribute('aria-activedescendant',active.id);active.scrollIntoView({block:'nearest'});
+});
+async function loadAIModels(){
+  if(modelsLoading)return;
+  modelsLoading=true;const sequence=++modelsSequence;modelLoad.disabled=true;modelLoad.textContent='加载中…';modelStatus.dataset.kind='loading';modelStatus.textContent='正在获取此接口的模型列表…';
+  try{
+    const result=await sourceRequest('/api/ai/models',{endpoint:document.getElementById('ai-endpoint').value,apiKeyEnv:document.getElementById('ai-key-env').value,apiKey:document.getElementById('ai-api-key').value});
+    if(sequence!==modelsSequence)return;
+    availableAIModels=result.models;modelStatus.dataset.kind=result.models.length?'success':'empty';modelStatus.textContent=result.models.length?'已从接口加载 '+result.models.length+' 个模型':'接口未返回模型，可手动填写。';renderModelOptions();
+  }catch(error){if(sequence!==modelsSequence)return;availableAIModels=[];modelStatus.dataset.kind='error';modelStatus.textContent=error.message;renderModelOptions();}
+  finally{modelsLoading=false;modelLoad.disabled=false;modelLoad.textContent='加载模型';}
+}
+modelLoad.onclick=loadAIModels;
+for(const id of ['ai-endpoint','ai-key-env','ai-api-key'])document.getElementById(id).addEventListener('input',()=>{modelsSequence++;availableAIModels=[];closeModelMenu();modelStatus.dataset.kind='empty';modelStatus.textContent='连接信息已改变，请重新加载模型。';});
+aiDialog.addEventListener('close',closeModelMenu);
+
+document.getElementById('ai-endpoint').addEventListener('input',()=>{document.getElementById('ai-http-note').hidden=!document.getElementById('ai-endpoint').value.startsWith('http:');});
+
+document.getElementById('ai-start-edit').onclick=()=>{aiDialog.close();document.querySelector('[data-mode="edit"]').click();showToast('选中组件并修改，需 AI 写回的修改会自动进入待办');};

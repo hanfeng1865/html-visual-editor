@@ -361,7 +361,13 @@
     <div class="project-dialog-head"><h2 id="history-title">恢复历史版本</h2><button id="history-close" type="button" aria-label="关闭">×</button></div>
     <p class="field-hint">先选一个版本查看效果，确认后再恢复。恢复前会自动保留你现在的修改。</p>
     <p id="history-status" role="status"></p>
-    <div class="history-workspace"><div id="history-list"></div><div class="history-detail">
+    <div class="history-workspace"><div class="history-sidebar">
+      <div class="history-tabs" role="tablist" aria-label="历史版本类型">
+        <button id="history-tab-changes" type="button" role="tab" aria-selected="true" aria-controls="history-list" data-history-tab="changes">实际改动</button>
+        <button id="history-tab-backups" type="button" role="tab" aria-selected="false" aria-controls="history-list" tabindex="-1" data-history-tab="backups">保存前备份</button>
+      </div>
+      <div id="history-list" role="tabpanel" aria-labelledby="history-tab-changes"></div>
+    </div><div class="history-detail">
       <h3 id="history-preview-title">选择一个版本</h3>
       <p id="history-preview-note" class="field-hint">右侧显示所选版本的页面效果，可滚动查看。</p>
       <label class="history-page-control">预览页面<select id="history-preview-page" aria-label="历史预览页面"></select></label>

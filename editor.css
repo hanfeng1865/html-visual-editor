@@ -556,3 +556,13 @@ button { cursor:pointer; }
 .editor-main.sidebar-collapsed .help-toggle-label,.editor-main.sidebar-collapsed .help-toggle-arrow,.editor-main.sidebar-collapsed #structure-panel,.editor-main.sidebar-collapsed #editor-help-content,.editor-main.sidebar-collapsed #ai-dialog{display:none !important;}
 @media(max-width:1100px){.editor-main.sidebar-collapsed:is(.inspector-open,.editing-mode){grid-template-columns:40px minmax(0,1fr) 290px !important;}}
 @media(max-width:900px){.editor-main.sidebar-collapsed:is(.inspector-open,.editing-mode){grid-template-columns:40px minmax(0,1fr) 240px !important;}}
+
+.history-change-summary { display:block; margin:6px 0; color:#405779; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+.history-row button[aria-pressed="true"] .history-change-summary { color:#245fc3; }
+#history-preview-note { white-space:pre-line; }
+
+.history-sidebar { min-width:0; }
+.history-tabs { display:flex; gap:4px; padding:4px; margin-bottom:12px; border-radius:8px; background:#eef2f7; }
+.history-tabs button { flex:1; border:0; border-radius:6px; padding:8px 4px; font-size:12px; color:#68768d; background:transparent; cursor:pointer; white-space:nowrap; }
+.history-tabs button[aria-selected="true"] { background:#fff; color:#2468d8; font-weight:600; box-shadow:0 1px 4px #23344d14; }
+.history-tabs button:focus-visible { outline:2px solid #2468d8; outline-offset:2px; }

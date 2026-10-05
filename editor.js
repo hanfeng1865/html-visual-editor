@@ -2399,16 +2399,62 @@ async function restoreHistory(id) {
     };
   }catch(error){sourceStatus.textContent=`无法准备恢复：${error.message}`;}
 }
-function historyRow(id,title,detail,savedAt=null) {
+function historyRow(id,title,detail,savedAt=null,changeSummary='') {
   const row=document.createElement('div');row.className='history-row';
   const info=document.createElement('div'),label=document.createElement('strong'),hint=document.createElement('small');
-  label.textContent=title;hint.textContent=detail;info.append(label,hint);
-  const button=document.createElement('button');button.type='button';button.dataset.version=id;button.setAttribute('aria-pressed','false');button.append(info);button.onclick=()=>previewHistory(id,title,detail,savedAt);
+  label.textContent=title;hint.textContent=detail;info.append(label);
+  if(changeSummary){const description=document.createElement('span');description.className='history-change-summary';description.textContent=changeSummary;info.append(description);}
+  info.append(hint);
+  const button=document.createElement('button');button.type='button';button.dataset.version=id;button.setAttribute('aria-pressed','false');button.append(info);button.onclick=()=>previewHistory(id,title,[changeSummary,detail].filter(Boolean).join('\n'),savedAt);
   row.append(button);historyList.append(row);
+}
+let historyVersions=[],historyTab='changes';
+const historyTabs=[...document.querySelectorAll('[data-history-tab]')];
+function isHistoryBackup(version) {
+  return ['before-save','before-restore'].includes(version.kind) || version.beforeRestore;
+}
+function renderHistoryTab(tab) {
+  if(restoringHistory)return;
+  historyTab=tab;historyPreviewToken++;historyChoice=null;historyPreviewId=null;
+  historyPreview.onload=null;historyPreview.srcdoc='';historyPreview.style.visibility='hidden';historyRestore.disabled=true;
+  historyList.replaceChildren();
+  for(const button of historyTabs) {
+    const backup=button.dataset.historyTab==='backups';
+    const count=historyVersions.filter(version=>isHistoryBackup(version)===backup).length;
+    const active=button.dataset.historyTab===tab;
+    button.textContent=`${backup?'保存前备份':'实际改动'}（${count}）`;
+    button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;
+  }
+  historyList.setAttribute('aria-labelledby',`history-tab-${tab}`);
+  const versions=historyVersions.filter(version=>isHistoryBackup(version)===(tab==='backups'));
+  for(const version of versions) {
+    const number=historyVersions.length-historyVersions.indexOf(version);
+    const time=new Date(version.savedAt).toLocaleString('zh-CN',{month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+    const title=isHistoryBackup(version)?`${version.beforeRestore?'恢复前备份':'保存前备份'} ${number}`:version.id==='current'?'最近一次保存':`历史保存 ${number}`;
+    historyRow(version.id,title,`${time}\n${version.summary}`,version.savedAt,version.changeSummary||'');
+  }
+  if(tab==='changes')historyRow('original','初版副本','首次记录的独立副本；日常保存只更新当前工作文件');
+  historyStatus.textContent=`${tab==='backups'?'保存前备份':'实际改动'} · ${versions.length} 个版本`;
+  if(!historyList.children.length) {
+    const empty=document.createElement('p');empty.className='field-hint';empty.textContent='暂无保存前备份';historyList.append(empty);
+    document.getElementById('history-preview-title').textContent='暂无备份版本';
+    document.getElementById('history-preview-note').textContent='保存或恢复页面时会自动生成备份。';
+    document.getElementById('history-page-note').textContent='';
+  }else historyList.querySelector('button')?.click();
+}
+for(const button of historyTabs) {
+  button.addEventListener('click',()=>renderHistoryTab(button.dataset.historyTab));
+  button.addEventListener('keydown',event=>{
+    if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+    event.preventDefault();
+    const index=event.key==='Home'?0:event.key==='End'?1:1-historyTabs.indexOf(button);
+    historyTabs[index].focus();renderHistoryTab(historyTabs[index].dataset.historyTab);
+  });
 }
 async function openHistory() {
   if(document.getElementById('save-button').disabled){showToast('正在保存，请稍后打开历史版本');return;}
   commitCardForm();exportMenu.hidden=true;
+  historyVersions=[];historyTab='changes';historyTabs.forEach(button=>button.disabled=true);
   historyList.replaceChildren();historyStatus.textContent='正在读取当前页面的历史版本…';
   historyRestore.disabled=true;historyPreview.style.visibility='hidden';
   historyPage.replaceChildren(...(projectConfig?.pages||[projectEntry]).map(entry=>new Option(entry,entry)));
@@ -2416,14 +2462,9 @@ async function openHistory() {
   try {
     const response=await fetch(projectEndpoint('/api/source-history'),{cache:'no-store'});
     const result=await response.json();if(!response.ok)throw new Error(result.error||'读取失败');
-    for(const [index,version] of result.versions.entries()) {
-      const time=new Date(version.savedAt).toLocaleString('zh-CN',{month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
-      historyRow(version.id,version.id==='current'?'最近一次保存':version.beforeRestore?'恢复前的状态':`历史保存 ${result.versions.length-index}`,`${time}\n${version.summary}`,version.savedAt);
-    }
-    historyRow('original','初版副本','首次记录的独立副本；日常保存只更新当前工作文件');
-    historyStatus.textContent=result.versions.length?`${result.versions.length} 个版本 · 包含源码和编辑记录`:'尚无保存版本，可查看原始页面。';
-    historyList.querySelector('button')?.click();
+    historyVersions=result.versions;renderHistoryTab(historyTab);
   }catch(error){historyStatus.textContent=`读取失败：${error.message}`;}
+  finally{historyTabs.forEach(button=>button.disabled=false);}
 }
 document.getElementById('history-button').addEventListener('click',openHistory);
 document.getElementById('reset-button').addEventListener('click',openHistory);

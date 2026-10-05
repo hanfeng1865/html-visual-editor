@@ -1,3 +1,4 @@
+import {summarizeSourceChanges,summarizeDraft} from './source-change-summary.mjs';
 import {readFile,writeFile,rename,mkdir,readdir,unlink} from 'node:fs/promises';
 import {join,dirname,resolve} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -28,8 +29,8 @@ export async function readSourceState(project,editorDir) {
   const hashes=Object.fromEntries(Object.keys(files).sort().map(path=>[path,hash(files[path])]));
   return {source:files[project.entry],files,hashes,revision:hash(JSON.stringify([hashes,patches])),entry:project.entry};
 }
-async function snapshot(project,current,patches,kind,id=`code-${Date.now()}-${randomUUID()}`) {
-  const record={id,createdAt:new Date().toISOString(),entry:project.entry,files:current.files,patches,kind};
+async function snapshot(project,current,patches,kind,id=`code-${Date.now()}-${randomUUID()}`,changeSummary) {
+  const record={id,createdAt:new Date().toISOString(),entry:project.entry,files:current.files,patches,kind,...(changeSummary?{changeSummary}:{})};
   await atomic(join(historyDir(project),`${id}.json`),JSON.stringify(record));return record;
 }
 export async function ensureSourceOrigin(project,editorDir) {
@@ -51,7 +52,20 @@ export async function readSourceVersion(project,id) {
 export async function listSourceVersions(project) {
   let names=[];try{names=await readdir(historyDir(project));}catch(error){if(error.code!=='ENOENT')throw error;}
   const records=await Promise.all(names.filter(name=>name.startsWith('code-')&&name.endsWith('.json')).map(name=>readSourceVersion(project,name.slice(0,-5))));
-  const versions=records.map(record=>({id:record.id,savedAt:record.createdAt,patchCount:Object.keys(record.patches).length,sourceVersion:true,beforeRestore:record.kind==='before-restore',summary:`${record.kind==='saved'?'已写入源码':record.kind==='restored'?'恢复后的源码':record.kind==='before-save'?'保存前的源码与草稿':'恢复前的源码与草稿'} · ${Object.keys(record.files).length} 个源码文件`}));
+  const ranks={'before-save':0,'saved':1,'before-restore':0,'restored':1};
+  records.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||(ranks[a.kind]??0)-(ranks[b.kind]??0)||a.id.localeCompare(b.id));
+  let previous;
+  try{previous=(await readSourceVersion(project,'original')).files;}catch(error){if(error.code!=='ENOENT')throw error;}
+  for(const record of records) {
+    if(!record.changeSummary) {
+      if(record.kind==='before-save' || record.kind==='before-restore') {
+        const draft=summarizeDraft(record.patches);
+        record.changeSummary=(record.kind==='before-save'?'保存前备份':'恢复前备份')+(draft?`；待保存：${draft}`:'');
+      }else record.changeSummary=summarizeSourceChanges(previous||record.files,record.files);
+    }
+    previous=record.files;
+  }
+  const versions=[...records].reverse().map(record=>({id:record.id,savedAt:record.createdAt,patchCount:Object.keys(record.patches).length,sourceVersion:true,kind:record.kind,changeSummary:record.changeSummary,beforeRestore:record.kind==='before-restore',summary:`${record.kind==='saved'?'已写入源码':record.kind==='restored'?'恢复后的源码':record.kind==='before-save'?'保存前的源码与草稿':'恢复前的源码与草稿'} · ${Object.keys(record.files).length} 个源码文件`}));
   versions.push(...(await listVisualHistory({filePath:project.editsFile,backupDir:project.backupDir})).filter(v=>!records.length || v.id!=='current').map(v=>({...v,id:`legacy:${v.id}`,summary:`旧版调整记录 · ${v.summary}`})));
   return versions.sort((a,b)=>b.savedAt.localeCompare(a.savedAt));
 }
@@ -81,7 +95,7 @@ export async function saveSource(project,editorDir,{revision,html,draft,pending=
     await snapshot(project,current,draft.patches,'before-save');
     if((await readSourceState(project,editorDir)).revision!==revision)throw fail('备份期间源码发生变化，未写入任何修改');
     await writeTransaction(project,{[project.entry]:html},pending.patches);
-    const result=await readSourceState(project,editorDir);await snapshot(project,result,pending.patches,'saved');return result;
+    const result=await readSourceState(project,editorDir);await snapshot(project,result,pending.patches,'saved',undefined,summarizeSourceChanges(current.files,result.files));return result;
   });
 }
 
@@ -97,7 +111,7 @@ export async function applyAISource(project,editorDir,{revision,files,draft}) {
     await snapshot(project,current,draft.patches,'before-save');
     if((await readSourceState(project,editorDir)).revision!==revision)throw fail('备份期间源码发生变化，未写入 AI 修改');
     await writeTransaction(project,files,{});
-    const result=await readSourceState(project,editorDir);await snapshot(project,result,{},'saved');return result;
+    const result=await readSourceState(project,editorDir);await snapshot(project,result,{},'saved',undefined,summarizeSourceChanges(current.files,result.files));return result;
   });
 }
 export async function restoreSource(project,editorDir,{id,revision,draft}) {
@@ -108,7 +122,7 @@ export async function restoreSource(project,editorDir,{id,revision,draft}) {
     await snapshot(project,current,draft.patches,'before-restore');
     if((await readSourceState(project,editorDir)).revision!==revision)throw fail('备份期间源码发生变化，未恢复');
     await writeTransaction(project,target.files,target.patches);
-    const result=await readSourceState(project,editorDir);await snapshot(project,result,target.patches,'restored');
+    const result=await readSourceState(project,editorDir);await snapshot(project,result,target.patches,'restored',undefined,'恢复版本；'+summarizeSourceChanges(current.files,result.files));
     return {...result,version:1,patches:target.patches};
   });
 }

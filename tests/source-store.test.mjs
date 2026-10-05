@@ -18,6 +18,13 @@ test('source saves reject stale writes, preserve backups, and restore HTML/CSS/J
   assert.equal(await readFile(join(root,'index.html'),'utf8'),'<h1>Editor</h1>');
   assert.deepEqual(JSON.parse(await readFile(p.editsFile,'utf8')).patches,{});
   const versions=await listSourceVersions(p);assert.equal(versions.length,2);
+  assert.match(versions.find(v=>v.summary.startsWith('已写入')).changeSummary,/Codex.*Editor/);
+  assert.match(versions.find(v=>v.summary.startsWith('保存前')).changeSummary,/待保存.*Editor/);
+  const savedRecord=await readSourceVersion(p,versions.find(v=>v.summary.startsWith('已写入')).id);
+  assert.match(savedRecord.changeSummary,/Codex.*Editor/);
+  delete savedRecord.changeSummary;
+  await writeFile(join(root,'.visual-editor','page','.source-history',savedRecord.id+'.json'),JSON.stringify(savedRecord));
+  assert.match((await listSourceVersions(p)).find(v=>v.id===savedRecord.id).changeSummary,/Codex.*Editor/,'旧记录自动生成改动摘要');
   const before=await readSourceVersion(p,versions.find(v=>v.summary.startsWith('保存前')).id);
   assert.equal(before.files['index.html'],'<h1>Codex</h1>');assert.deepEqual(before.patches,draft.patches);
   await writeFile(join(root,'styles.css'),'h1{color:blue}');await writeFile(join(root,'app.js'),'const changed=true;');

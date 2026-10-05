@@ -49,7 +49,7 @@ test('each change marker exposes a persistent view and edit note entry', async (
 
   assert.match(html, /annotationNoteKey/);
   assert.match(html, /addNoteButton/);
-  assert.match(html, /改动说明/);
+  assert.match(html, /逻辑说明/);
   assert.match(html, /annotations\.notes/);
   assert.match(html, /annotations\.colors/);
   assert.match(html, /标记颜色/);

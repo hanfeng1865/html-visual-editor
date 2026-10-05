@@ -110,7 +110,7 @@ try {
   await f.locator('#title').dblclick({position:{x:16,y:16},modifiers:['Alt']});
   assert.equal(await f.locator('#title').evaluate(el=>el.ownerDocument.getSelection().isCollapsed),true,'再次编辑也不全选');
   await f.locator('#title').press('Enter');
-  assert.equal(await f.locator('#title').getAttribute('contenteditable'),'false','回车结束编辑');
+  assert.equal(await f.locator('#title').evaluate(el=>el.isContentEditable),false,'回车结束编辑');
   const inlineSaved=page.waitForResponse(response=>response.url().includes('/api/source-save') && response.request().method()==='POST');
   await page.locator('#save-button').click();assert.equal((await inlineSaved).status(),200);
   await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);

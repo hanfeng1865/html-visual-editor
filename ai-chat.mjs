@@ -11,14 +11,22 @@ export function createAIChat({input,log,storageKey}) {
   function render(){
     log.replaceChildren();log.hidden=!messages.length;
     if(historyPanel)historyPanel.hidden=!messages.length;
-    for(const item of messages){const row=document.createElement('p'),name=document.createElement('b'),text=document.createElement('span');row.className=`ai-chat-message ${item.role}`;name.textContent=item.role==='user'?'你':'AI';text.textContent=item.content;row.append(name,text);log.append(row);}
-    log.scrollTop=log.scrollHeight;
+    for(const item of [...messages].reverse()){
+      const row=document.createElement('p'),name=document.createElement('b'),text=document.createElement('span');
+      row.className=`ai-chat-message ${item.role}`;name.textContent=item.role==='user'?'你':'AI';text.textContent=item.content;
+      if(item.role==='assistant' && Number.isFinite(item.durationMs) && item.durationMs>=0){
+        const duration=document.createElement('small');duration.className='ai-chat-duration';
+        duration.textContent=`用时 ${Math.floor(item.durationMs/1000)} 秒`;text.append(duration);
+      }
+      row.append(name,text);log.append(row);
+    }
+    log.scrollTop=0;
   }
   input.addEventListener('input',save);render();
   return {
     value:()=>input.value.trim(),
     history:()=>messages.slice(-12).map(({role,content})=>({role,content})),
-    add(role,content){messages.push({role,content:content.slice(0,12000)});messages=messages.slice(-40);save();render();},
+    add(role,content,{durationMs}={}){const item={role,content:content.slice(0,12000)};if(role==='assistant' && Number.isFinite(durationMs) && durationMs>=0)item.durationMs=durationMs;messages.push(item);messages=messages.slice(-40);save();render();},
     clearInput(){input.value='';if(historyPanel)historyPanel.open=false;save();},
   };
 }

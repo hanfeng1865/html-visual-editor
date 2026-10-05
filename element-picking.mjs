@@ -1,9 +1,37 @@
 // One hit test drives hover, click, double-click and drag selection.
 // Text is hit by its rendered glyph bounds, not a full-width wrapper box.
+const componentSelector='[data-editor-component],[data-chart-type],[data-component],.panel,.finance-block,article,section,aside,header,footer,nav,figure,fieldset,details,dialog,table,ul,ol,[role="group"],[role="region"],[role="dialog"],[role="list"],[role="table"]';
+const graphicsSelector='svg,img,video,canvas';
+const componentShadows=new WeakMap();
+
+// Shared by point picking and sweep selection. Source node IDs alone are not
+// component boundaries: the editor assigns them to every inserted descendant.
+export function isSelectableComponent(element, {cardSelector}={}) {
+  if(!element || element.matches('html,body,main,svg,svg *'))return false;
+  if(element.matches(componentSelector) || (cardSelector && element.matches(cardSelector)))return true;
+  if(!element.matches('div,span'))return false;
+  const style=element.ownerDocument.defaultView.getComputedStyle(element);
+  if(style.display==='contents' || style.display==='inline' || style.visibility==='hidden')return false;
+  const visibleColor=color=>color && color!=='transparent' && !/rgba\([^)]*,\s*0\s*\)$/.test(color);
+  const border=['Top','Right','Bottom','Left'].some(side=>parseFloat(style[`border${side}Width`])>0 && !['none','hidden'].includes(style[`border${side}Style`]) && visibleColor(style[`border${side}Color`]));
+  // Remember the real shadow before the editor replaces it with a selection
+  // halo. Hover only adds an outline, so its shadow remains authoritative.
+  if(!element.matches('.ve-selected'))componentShadows.set(element,style.boxShadow!=='none');
+  const shadow=componentShadows.get(element) || false;
+  return border || visibleColor(style.backgroundColor) || style.backgroundImage!=='none' || shadow;
+}
+
+function containingComponent(hit,options) {
+  for(let node=hit;node && !node.matches('html,body');node=node.parentElement) {
+    if(node.matches('button,a,[role="button"]') || isSelectableComponent(node,options))return node;
+  }
+  return null;
+}
+
 function pickFromHit(doc, hit, x, y, {cardSelector, exact=false}) {
   if(!hit || hit.closest('script,style,template,#editor-change-overlay,#editor-box-selection,[data-ve-locked],[contenteditable="true"]'))return null;
-  const icon=hit.closest('svg,img,video,canvas');
-  if(icon)return icon;
+  const icon=hit.closest(graphicsSelector);
+  if(icon)return (!exact && icon.closest('[data-chart-type]')) || icon;
   const control=hit.closest('input,textarea,select');
   if(control)return control;
   const walker=doc.createTreeWalker(hit,doc.defaultView.NodeFilter.SHOW_TEXT);
@@ -19,10 +47,10 @@ function pickFromHit(doc, hit, x, y, {cardSelector, exact=false}) {
   }
   if(hit.matches('html,body'))return null;
   if(exact)return hit;
-  const component=hit.closest(cardSelector) || hit.closest('button,a,[role="button"]');
+  const component=containingComponent(hit,{cardSelector});
   if(component)return component;
-  // Space around text and between children is canvas background. Containers
-  // remain selectable through exact (Alt) picking and the layer tree.
+  // Unrecognized wrappers remain canvas background. Content panels can be
+  // selected from their padding without swallowing text, controls or charts.
   if(hit.childElementCount || hit.textContent.trim())return null;
   return hit;
 }

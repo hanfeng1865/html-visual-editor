@@ -26,3 +26,15 @@ test('screen-pixel snapping tolerance scales with zoom and uses a group bounding
 test('center guides remain available when differently sized elements only share a center',()=>{
   assert.deepEqual(alignmentMatches(box(200,100),[box(0,90,100,60)],.6),[{axis:'y',value:120,index:1}]);
 });
+
+test('resize snaps only moving right and bottom edges to any nearby reference anchor',async()=>{
+  const {resizeAlignmentSnap}=await import('../alignment-guides.mjs');
+  const rect=box(40,80,258,218),target=box(300,220,160,80);
+  const snap=resizeAlignmentSnap(rect,[target],6);
+  assert.equal(snap.x.delta,2);assert.equal(snap.y.delta,2);
+  assert.equal(snap.x.value,300);assert.equal(snap.y.value,300);
+  // A fixed left edge already aligned must not suppress the moving right edge.
+  assert.equal(resizeAlignmentSnap(box(300,80,158,40),[target],6).x.delta,2);
+  assert.equal(resizeAlignmentSnap(box(40,80,252,212),[target],6).x,null);
+  assert.equal(resizeAlignmentSnap(box(40,80,252,212),[target],6/.5).x.delta,8);
+});

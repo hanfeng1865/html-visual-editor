@@ -22,6 +22,23 @@ export function alignmentSnap(rect, candidates, tolerance) {
   return result;
 }
 
+// A bottom-right resize only changes the right and bottom edges. Match those
+// edges against every reference anchor without shifting the fixed top-left.
+export function resizeAlignmentSnap(rect, candidates, tolerance) {
+  const result={x:null,y:null};
+  for(const axis of ['x','y']) {
+    const [start,end]=axis==='x'?['left','right']:['top','bottom'];
+    for(const target of candidates) {
+      const distance=Math.hypot((target.left+target.right-rect.left-rect.right)/2,(target.top+target.bottom-rect.top-rect.bottom)/2);
+      for(const value of [target[start],(target[start]+target[end])/2,target[end]]) {
+        const delta=value-rect[end],score=Math.abs(delta)+distance*.0001;
+        if(Math.abs(delta)<=tolerance && (!result[axis] || score<result[axis].score))result[axis]={delta,value,score};
+      }
+    }
+  }
+  return result;
+}
+
 // Report every aligned anchor after snapping, so equal-sized elements can show
 // both edges at once. Deduplicate shared coordinates across nearby references.
 export function alignmentMatches(rect, candidates, tolerance) {

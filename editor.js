@@ -1,12 +1,15 @@
+import {readAIEvents} from './ai-stream.mjs';
 import {createAIAttachments} from './ai-attachments.mjs';
+import {renderSourceDiff} from './source-diff.mjs';
+import {chartTemplates} from './chart-components.mjs';
 import {createAIChat} from './ai-chat.mjs';
 import {verifyAIPage,compareAIErrors,loadAIFrame} from './ai-editor.mjs';
 import {splitEditRoutes} from './ai-routing.mjs';
 import { segmentIntersectsRect } from './sweep-selection.mjs';
 import { selectionLayoutOffsets } from './selection-layout.mjs';
 import {installVersionComparison} from './version-comparison.mjs';
-import { pickElementAtPoint, pickElementsAtPoint } from './element-picking.mjs';
-import { alignmentSnap, alignmentMatches, unionRects } from './alignment-guides.mjs';
+import { pickElementAtPoint, pickElementsAtPoint, isSelectableComponent } from './element-picking.mjs';
+import { alignmentSnap, resizeAlignmentSnap, alignmentMatches, unionRects } from './alignment-guides.mjs';
 import { CARD_SELECTOR, STYLE_PROPERTIES, ICON_CHOICES, IMAGE_CHOICES, elementLabel, contentFields, textTargetsForElement } from './editor-components.mjs';
 import {
   createEditorState,
@@ -47,6 +50,32 @@ const canvasFrame = document.getElementById('canvas-frame');
 const editorMain = document.querySelector('.editor-main');
 const helpToggle = document.getElementById('editor-help-toggle');
 const helpContent = document.getElementById('editor-help-content');
+const sidebarToggle = document.getElementById('sidebar-toggle');
+function updateSidebarToggle() {
+  const expanded = !editorMain.classList.contains('sidebar-collapsed') && editorMain.matches('.ai-open,.layers-open,.help-open');
+  sidebarToggle.setAttribute('aria-expanded', String(expanded));
+  sidebarToggle.title = sidebarToggle.ariaLabel = expanded ? '收起左侧面板' : '展开左侧面板';
+  sidebarToggle.firstElementChild.textContent = expanded ? '‹' : '›';
+  sidebarToggle.querySelector('.sidebar-toggle-label').textContent = expanded ? '收起' : '展开';
+}
+sidebarToggle.addEventListener('click', () => {
+  if (sidebarToggle.getAttribute('aria-expanded') === 'true') {
+    editorMain.classList.add('sidebar-collapsed');
+  } else {
+    editorMain.classList.remove('sidebar-collapsed');
+    if (!editorMain.matches('.ai-open,.layers-open,.help-open')) setLayersOpen(true);
+  }
+  updateSidebarToggle();
+  resizeCanvas();
+});
+document.querySelector('.sidebar-navigation').addEventListener('click', event => {
+  const button = event.target.closest('button');
+  if (!button || !editorMain.classList.contains('sidebar-collapsed')) return;
+  editorMain.classList.remove('sidebar-collapsed');
+  updateSidebarToggle();
+  resizeCanvas();
+  if (button.getAttribute('aria-expanded') === 'true') event.stopPropagation();
+}, { capture:true });
 const toastElement = document.getElementById('toast');
 const selectionPath = document.getElementById('selection-path');
 const inspectorFields = document.getElementById('inspector-fields');
@@ -96,11 +125,13 @@ let selectedManualBoxId = null;
 let annotationLayout = [];
 
 function setHelpOpen(open, { persist = true } = {}) {
+  if (open) editorMain.classList.remove('sidebar-collapsed');
   editorMain.classList.toggle('help-open', open);
   helpContent.hidden = !open;
   helpToggle.setAttribute('aria-expanded', String(open));
   helpToggle.title = open ? '收起使用说明' : '展开使用说明';
   if (persist) localStorage.setItem(HELP_OPEN_KEY, open ? '1' : '0');
+  updateSidebarToggle();
 }
 
 setHelpOpen(localStorage.getItem(HELP_OPEN_KEY) === '1', { persist:false });
@@ -187,8 +218,7 @@ function renderPendingHints(count) {
   const summary=document.getElementById('saveability-summary');
   if(saveabilityStats.ready) {
     summary.dataset.kind=count?'blocked':'source';
-    const description=saveabilityStats.blocked?`页面检查：${saveabilityStats.blocked} 个元素的修改可能需要 AI 辅助写入。`:saveabilityStats.runtime?`页面检查：${saveabilityStats.runtime} 个动态元素可通过页面调整记录保存。`:'页面检查：普通修改可直接写回源码。';
-    summary.textContent=description+` 待 AI 写入：${count} 项（只统计你实际做过的修改）。`;
+    summary.textContent=`待 AI 写入：${count} 项（只统计你实际做过的修改）。`;
   }
   const detail=document.getElementById('ai-empty-detail');
   detail.textContent=(saveabilityStats.blocked?`页面检测到 ${saveabilityStats.blocked} 个可能需要 AI 辅助写入的元素。`:'')+'先进入编辑模式，选中并修改组件；需要 AI 写回的修改会自动显示在这里。';
@@ -221,23 +251,45 @@ function commitCardForm() {
     const value=field.input.value;
     if(field.input.disabled || value===field.original || !field.element.isConnected)continue;
     if(field.kind==='icon' || field.kind==='image') changes.push({element:field.element,[field.kind]:value});
+    else if(field.attribute) changes.push({element:field.element,attributes:{[field.attribute]:value}});
     else if(field.leaf) changes.push({element:field.element,text:value});
     else changes.push({element:field.element,textNodes:{[field.index]:value}});
     field.original=value;
   }
-  if(changes.length && commitChanges(changes))showToast('卡片内容已应用');
+  if(changes.length && commitChanges(changes))showToast(selectedElement?.matches('input,textarea,select')?'表单内容已应用':'卡片内容已应用');
 }
 function renderCardForm(element) {
   const section=document.getElementById('card-section');
   const container=document.getElementById('card-fields');
   cardInputs=[];container.replaceChildren();
-  section.hidden=selectedElements.size!==1 || !element.matches(CARD_SELECTOR);
+  const formControl=element.matches('input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="button"]):not([type="submit"]),textarea,select');
+  section.hidden=selectedElements.size!==1 || !(formControl || element.matches(CARD_SELECTOR));
   if(section.hidden)return;
+  section.querySelector('h3').textContent=formControl?'表单内容':'卡片内容';
+  section.querySelector('.field-hint').textContent=formControl?'修改提示文字、默认内容或选项文字；可撤销并保存到项目。':'只修改此卡片的演示展示，不联动详情与统计计算。';
+  document.getElementById('apply-card-content').textContent=formControl?'应用表单内容':'应用卡片内容';
   const addField=(label,input,field)=>{
     const row=document.createElement('label');const caption=document.createElement('span');caption.textContent=label;
     input.setAttribute('aria-label',label); row.append(caption,input);container.append(row);
     cardInputs.push({...field,input,original:input.value});
   };
+  if(formControl) {
+    const addText=(label,value,field)=>{
+      const input=document.createElement('input');input.type='text';input.value=value;
+      addField(label,input,field);
+    };
+    if(element.matches('select')) {
+      let optionIndex=0;
+      for(const option of element.options) {
+        const label=option.disabled && option.value===''?'提示文字':`选项 ${++optionIndex}`;
+        addText(label,option.textContent,{element:option,leaf:true});
+      }
+    } else {
+      addText('提示文字',element.getAttribute('placeholder') || '',{element,attribute:'placeholder'});
+      addText('默认内容',element.matches('textarea')?element.textContent:element.getAttribute('value') || '',element.matches('textarea')?{element,leaf:true}:{element,attribute:'value'});
+    }
+    return;
+  }
   for(const field of contentFields(element)) {
     const input=document.createElement('input');input.type='text';input.value=field.value;
     addField(field.label,input,field);
@@ -416,9 +468,10 @@ function setPointerMode(value) {
 }
 function cancelMovement() {
   document.getElementById('editor-alignment-guides')?.remove();
+  document.getElementById('editor-swap-feedback')?.remove();
   if(sweepGesture)finishSweepSelection(null,true);
   if(!moveGesture)return;
-  for(const {element,original} of moveGesture.elements) element.style.translate=original;
+  for(const {element,original} of moveGesture.elements) {element.style.translate=original;element.classList.remove('ve-swap-source');}
   for(const entry of moveGesture.elements) {
     entry.ghost?.remove();
     if(entry.visibility!==undefined)entry.element.style.visibility=entry.visibility;
@@ -434,7 +487,7 @@ function sweepCandidates() {
   const doc=frameDocument();
   const nodes=[...doc.body.querySelectorAll('*')].filter(node=>{
     if(node.closest('script,style,template,[hidden],[data-ve-locked],[contenteditable="true"],#editor-change-overlay,#editor-box-selection') || node.closest('svg')!==null && !node.matches('svg'))return false;
-    return node.matches(`${CARD_SELECTOR},button,a,input,textarea,select,svg,img,canvas,video`)
+    return isSelectableComponent(node,{cardSelector:CARD_SELECTOR}) || node.matches('button,a,input,textarea,select,svg,img,canvas,video')
       || [...node.childNodes].some(child=>child.nodeType===3 && child.textContent.trim())
       || (node.matches('div') && !node.childElementCount);
   });
@@ -459,7 +512,7 @@ function activateSweepSelection() {
 }
 function beginSweepSelection(event) {
   suppressNextClick=false;
-  if(pointerMode!=='move' || mode!=='edit' || event.button!==0 || event.altKey || event.target.closest?.('input,textarea,select,[contenteditable="true"],#editor-change-overlay,#editor-box-selection'))return;
+  if(pointerMode!=='move' || mode!=='edit' || event.button!==0 || event.altKey || event.target.closest?.('[contenteditable="true"],#editor-change-overlay,#editor-box-selection'))return;
   commitCardForm();clearHover();
   sweepGesture={pointerId:event.pointerId,capture:frameDocument().body,start:{x:event.clientX,y:event.clientY},last:{x:event.clientX,y:event.clientY},before:[...selectedElements],primary:selectedElement,additive:event.shiftKey,moved:false,target:pickCanvasTarget(event),down:event};
   sweepGesture.timer=setTimeout(activateSweepSelection,280);
@@ -504,8 +557,17 @@ function finishSweepSelection(event,cancel=false) {
   if(event){event.preventDefault();event.stopImmediatePropagation();}
 }
 function beginPointerMovement(event) {
-  if(!['move','swap'].includes(pointerMode) || mode!=='edit' || event.button!==0 || event.shiftKey || event.altKey || event.target.closest?.('input,textarea,[contenteditable="true"],#editor-change-overlay,#editor-box-selection'))return;
-  const target=pickCanvasTarget(event);
+  if(!['move','swap'].includes(pointerMode) || mode!=='edit' || event.button!==0 || event.shiftKey || event.altKey || event.target.closest?.('[contenteditable="true"],#editor-change-overlay,#editor-box-selection'))return;
+  let target=pickCanvasTarget(event);
+  if(pointerMode==='swap' && target) {
+    // Swap a component as a unit even when the drag starts on its text or chart.
+    if(selectedElements.size===1 && selectedElement?.contains(target) && (isSelectableComponent(selectedElement,{cardSelector:CARD_SELECTOR}) || selectedElement.matches('button,a,[role="button"]')))target=selectedElement;
+    else {
+      for(let node=target;node && node!==frameDocument().body;node=node.parentElement) {
+        if(isSelectableComponent(node,{cardSelector:CARD_SELECTOR}) || node.matches('button,a,[role="button"]')){target=node;break;}
+      }
+    }
+  }
   if(!target || !target.parentElement || target===frameDocument().body || isLocked(target))return;
   document.activeElement?.blur();
   frameDocument().activeElement?.blur();
@@ -518,6 +580,10 @@ function beginPointerMovement(event) {
   if(roots.some(node=>!allowChange(node)))return;
   if(pointerMode==='swap' && !allowReorder(target.parentElement))return;
   moveGesture={x:event.clientX,y:event.clientY,pointerId:event.pointerId,capture:target,elements:roots.map(element=>({element,origin:translationFor(element),original:element.style.translate})),moved:false,swapTarget:null};
+  if(pointerMode==='swap')moveGesture.swapRects=[...target.parentElement.children]
+    .filter(node=>!node.matches('template,script,style') && !isLocked(node))
+    .map(node=>({node,rect:node.getBoundingClientRect()}))
+    .filter(({rect})=>rect.width>0 && rect.height>0);
   moveGesture.references=alignmentReferences();
   target.setPointerCapture(event.pointerId);
   event.preventDefault();event.stopImmediatePropagation();
@@ -528,7 +594,7 @@ function updatePointerMovement(event) {
   if(!moveGesture.moved && Math.hypot(dx,dy)<4)return;
   moveGesture.moved=true;
   const first=moveGesture.elements[0].element;
-  for(const entry of moveGesture.elements) {
+  for(const entry of pointerMode==='move' ? moveGesture.elements : []) {
     const next={x:entry.origin.x+dx,y:entry.origin.y+dy};
     entry.element.style.translate=`${next.x}px ${next.y}px`;
   }
@@ -559,14 +625,50 @@ function updatePointerMovement(event) {
   }
   updateResizeHandle();
   if(pointerMode==='swap') {
-    const candidate=[...first.parentElement.children].find(node=>{
-      if(node===first || node.matches('template,script,style'))return false;
-      const r=node.getBoundingClientRect();return r.width>0 && r.height>0 && event.clientX>=r.left && event.clientX<=r.right && event.clientY>=r.top && event.clientY<=r.bottom;
-    });
+    // Hit-test the original slots, including a small tolerance in the gutter.
+    // The dragged component's translated bounds must never become a drop slot.
+    const distance=r=>Math.hypot(Math.max(r.left-event.clientX,0,event.clientX-r.right),Math.max(r.top-event.clientY,0,event.clientY-r.bottom));
+    const nearest=moveGesture.swapRects.map(entry=>({...entry,distance:distance(entry.rect)})).sort((a,b)=>a.distance-b.distance)[0];
+    const candidate=nearest?.distance<=12 && nearest.node!==first ? nearest.node : null;
     moveGesture.swapTarget?.classList.remove('ve-drop-target');
-    moveGesture.swapTarget=candidate;candidate?.classList.add('ve-drop-target');
+    moveGesture.swapTarget=candidate;
+    renderSwapFeedback(event);
   }
   updateMovementReadout();event.preventDefault();event.stopImmediatePropagation();
+}
+function renderSwapFeedback(event) {
+  const gesture=moveGesture,source=gesture.elements[0].element;
+  clearHover();source.classList.add('ve-swap-source');
+  document.getElementById('element-resize-handle').hidden=true;
+  document.getElementById('text-toolbar').hidden=true;
+  if(!gesture.feedback) {
+    const layer=document.createElement('div');layer.id='editor-swap-feedback';
+    const slots=gesture.swapRects.map(({node,rect})=>{
+      const box=document.createElement('div');box.className='swap-slot';box.setAttribute('aria-hidden','true');
+      const label=document.createElement('span');label.className='swap-slot-label';box.append(label);layer.append(box);
+      return {node,rect,box,label};
+    });
+    const hint=document.createElement('div');hint.className='swap-hint';hint.setAttribute('role','status');layer.append(hint);
+    document.body.append(layer);gesture.feedback={layer,slots,hint};
+  }
+  const {layer,slots,hint}=gesture.feedback;
+  const bounds=frame.getBoundingClientRect(),viewport=canvasScroll.getBoundingClientRect(),scale=bounds.width/frame.clientWidth;
+  const left=Math.max(bounds.left,viewport.left),top=Math.max(bounds.top,viewport.top);
+  const width=Math.max(0,Math.min(bounds.right,viewport.right)-left),height=Math.max(0,Math.min(bounds.bottom,viewport.bottom)-top);
+  Object.assign(layer.style,{left:`${left}px`,top:`${top}px`,width:`${width}px`,height:`${height}px`});
+  for(const {node,rect,box,label} of slots) {
+    const isSource=node===source,isTarget=node===gesture.swapTarget;
+    box.classList.toggle('is-source',isSource);box.classList.toggle('is-target',isTarget);
+    box.classList.toggle('is-compact',rect.height*scale<64);
+    label.textContent=isSource?'原位置':isTarget?'↔ 交换到这里':'';
+    label.hidden=!isSource && !isTarget;
+    const radius=parseFloat(frame.contentWindow.getComputedStyle(node).borderRadius)||6;
+    Object.assign(box.style,{left:`${bounds.left+rect.left*scale-left}px`,top:`${bounds.top+rect.top*scale-top}px`,width:`${rect.width*scale}px`,height:`${rect.height*scale}px`,borderRadius:`${Math.max(4,Math.min(12,radius*scale))}px`});
+  }
+  const message=gesture.swapTarget?'↔ 松手交换 · Esc 取消':'↔ 拖到虚线框，交换位置';
+  if(hint.textContent!==message)hint.textContent=message;
+  hint.classList.toggle('is-ready',Boolean(gesture.swapTarget));
+  Object.assign(hint.style,{left:`${Math.max(8,Math.min(width-hint.offsetWidth-8,bounds.left+event.clientX*scale-left+18))}px`,top:`${Math.max(8,Math.min(height-hint.offsetHeight-8,bounds.top+event.clientY*scale-top+22))}px`});
 }
 function dragContainerAt(event) {
   const doc=frameDocument(),moving=moveGesture.elements.map(entry=>entry.element);
@@ -633,6 +735,10 @@ function applyAlignmentGuides(bypass) {
   const canY=corrections.every(({current,next})=>Math.abs(next.y-current.y-(snap.y?.delta||0))<.6);
   for(const {element,current,next} of corrections)element.style.translate=`${canX?next.x:current.x}px ${canY?next.y:current.y}px`;
   const actual=unionRects(elements.map(node=>node.getBoundingClientRect()));
+  renderAlignmentGuides(actual,references,scale,{x:canX,y:canY});
+}
+function renderAlignmentGuides(actual,references,scale,axes={x:true,y:true}) {
+  document.getElementById('editor-alignment-guides')?.remove();
   const overlay=document.createElement('div');overlay.id='editor-alignment-guides';overlay.setAttribute('aria-hidden','true');
   Object.assign(overlay.style,{position:'fixed',inset:'0',pointerEvents:'none',zIndex:'9'});
   const f=frame.getBoundingClientRect(),c=canvasScroll.getBoundingClientRect();
@@ -640,7 +746,7 @@ function applyAlignmentGuides(bypass) {
   // Extend guides to the visible canvas. Use screen-pixel tolerances at
   // every zoom level.
   for(const {axis,value,index} of alignmentMatches(actual,references,.6/scale)) {
-    if(!(axis==='x'?canX:canY))continue;
+    if(!axes[axis])continue;
     const coordinate=(axis==='x'?f.left:f.top)+value*scale;
     if(coordinate<(axis==='x'?clip.left:clip.top) || coordinate>(axis==='x'?clip.right:clip.bottom))continue;
     const line=document.createElement('div');line.dataset.axis=axis;line.dataset.anchor=String(index);
@@ -653,6 +759,7 @@ function applyAlignmentGuides(bypass) {
 }
 function endPointerMovement(event) {
   if(!moveGesture || event.pointerId!==moveGesture.pointerId)return;
+  if(pointerMode==='swap')updatePointerMovement(event);
   const gesture=moveGesture, positions=gesture.elements.map(({element})=>({element,styles:{translate:element.style.translate}}));
   const placed=gesture.elements.map(({element})=>({element,rect:element.getBoundingClientRect()}));
   cancelMovement();
@@ -673,9 +780,28 @@ function endPointerMovement(event) {
         const parentSelector=selectorFor(parent);
         const changes=order.map((element,index)=>({element,position:{parent:parentSelector,index}}));
         changes.push({element:a,styles:{translate:'0px 0px'}},{element:b,styles:{translate:'0px 0px'}});
-        if(commitChanges(changes))showToast('同级元素已交换，可一次撤销');
+        const layout=frame.contentWindow.getComputedStyle(parent);
+        const aStyle=frame.contentWindow.getComputedStyle(a),bStyle=frame.contentWindow.getComputedStyle(b);
+        if(layout.display.includes('grid') || layout.display.includes('flex')) {
+          changes.push({element:a,styles:{order:bStyle.order}},{element:b,styles:{order:aStyle.order}});
+        }
+        if(layout.display.includes('grid')) {
+          const tracks=layout.gridTemplateColumns.split(/\s+/);
+          const slots=order.filter(node=>{const style=frame.contentWindow.getComputedStyle(node);return style.display!=='none' && !['absolute','fixed'].includes(style.position) && !node.matches('script,style');});
+          const plainRow=slots.includes(a) && slots.includes(b) && slots.length===tracks.length && tracks.every(track=>/^\d+(?:\.\d+)?px$/.test(track))
+            && slots.every(node=>{const style=frame.contentWindow.getComputedStyle(node);return style.gridColumnStart==='auto' && style.gridColumnEnd==='auto' && style.gridRowStart==='auto' && style.gridRowEnd==='auto';});
+          if(plainRow) {
+            // Unequal columns belong to their components. Move their proportions
+            // with the components instead of leaving a wide card in a narrow slot.
+            const ai=slots.indexOf(b),bi=slots.indexOf(a);
+            [tracks[ai],tracks[bi]]=[tracks[bi],tracks[ai]];
+            changes.push({element:parent,styles:{gridTemplateColumns:tracks.map(track=>`minmax(0, ${parseFloat(track)}fr)`).join(' ')}});
+            changes.push({element:a,styles:{width:'auto',minWidth:'0',maxWidth:'none'}},{element:b,styles:{width:'auto',minWidth:'0',maxWidth:'none'}});
+          }
+        }
+        if(commitChanges(changes))showToast('位置已交换，可撤销');
       }
-    } else showToast('未命中同级元素，已保留原位置');
+    } else showToast('没有选中交换目标，位置未改变。请拖到虚线框后松手');
   }
   patchObserver?.takeRecords();updateMovementReadout();
   event.preventDefault();event.stopImmediatePropagation();
@@ -789,8 +915,8 @@ function saveAnnotations() {
     const response = await fetch(projectEndpoint('/api/change-annotations'), {
       method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify(snapshot)
     });
-    if (!response.ok) throw new Error('改动说明保存失败');
-    showToast('改动说明已保存到项目');
+    if (!response.ok) throw new Error('逻辑说明保存失败');
+    showToast('逻辑说明已保存到项目');
   }).catch(error => showToast(error.message));
   return annotationSaveQueue;
 }
@@ -941,7 +1067,7 @@ function addNoteButton(marker, label, noteKey) {
   const button = doc.createElement('button');
   button.type = 'button';
   button.textContent = note ? '说明·' : '说明';
-  button.title = note || '查看或编辑改动说明';
+  button.title = note || '查看或编辑逻辑说明';
   Object.assign(button.style, {height:'18px',marginLeft:'6px',padding:'0 6px',border:'1px solid #ffffff88',borderRadius:'9px',background:note?'#fff':'#ffffff22',color:note?theme.button:'#fff',font:'700 10px/1 inherit',cursor:'pointer',pointerEvents:'auto'});
   button.addEventListener('pointerdown', event => event.stopPropagation());
   button.addEventListener('click', event => {
@@ -950,7 +1076,7 @@ function addNoteButton(marker, label, noteKey) {
     const panel = doc.createElement('div');
     panel.className = 'editor-change-note';
     Object.assign(panel.style, {boxSizing:'border-box',position:'fixed',zIndex:'2147483647',width:'min(520px, calc(100vw - 16px))',padding:'12px',border:'1px solid #b8d3ee',borderRadius:'8px',background:'#fff',boxShadow:'0 8px 24px #20354b33',color:'#334f68',pointerEvents:'auto'});
-    const heading = doc.createElement('b'); heading.textContent = '改动说明';
+    const heading = doc.createElement('b'); heading.textContent = '逻辑说明';
     Object.assign(heading.style, {display:'block',marginBottom:'7px',fontSize:'12px'});
     const textarea = doc.createElement('textarea'); textarea.value = note; textarea.maxLength = 2000;
     textarea.placeholder = '记录这项改动的原因、口径或需要注意的事项…';
@@ -1014,7 +1140,7 @@ function annotationCardNote(box, index, theme) {
   const title = document.createElement('div');
   title.className = 'annotation-card-title';
   const titleText = document.createElement('span');
-  titleText.textContent = `改动 ${index}`;
+  titleText.textContent = `逻辑 ${index}`;
   const edit = document.createElement('button');
   edit.type = 'button'; edit.textContent = '编辑说明';
   title.append(titleText, edit);
@@ -1154,7 +1280,7 @@ function cancelBoxSelection() {
   selectionLayer = null;
   boxToggle.classList.remove('active');
   boxToggle.setAttribute('aria-pressed', 'false');
-  boxToggle.textContent = '框选改动';
+  boxToggle.textContent = '框选标记';
 }
 
 function startBoxSelection() {
@@ -1270,7 +1396,7 @@ function renderChangeMarkers() {
   overlay.replaceChildren();
   const scope = activeChangeScope(doc);
   const dialogScopeMessage = '当前正在查看明细弹窗，关闭后可调整页面上的改动框';
-  boxToggle.title = scope ? dialogScopeMessage : '在画布中框选改动范围';
+  boxToggle.title = scope ? dialogScopeMessage : '在画布中框选标记范围';
   const items = [];
   annotations.boxes.filter(box => box.cockpit === markerCockpit(doc) && box.context === markerContext(scope) && boxViewMatches(doc, box)).forEach(box => {
     const target = queryPatchElement(doc, box.selector);
@@ -1301,7 +1427,7 @@ function renderChangeMarkers() {
     Object.assign(marker.style, {position:'fixed',left:`${rect.left}px`,top:`${rect.top}px`,width:`${rect.right-rect.left}px`,height:`${rect.bottom-rect.top}px`,border:`2px solid ${theme.solid}`,borderRadius:'9px',boxShadow:`0 0 0 2px ${theme.shadow}`,pointerEvents:'none'});
     const badge = doc.createElement('button');
     badge.type = 'button'; badge.textContent = String(index);
-    badge.title = '查看右侧改动说明'; badge.setAttribute('aria-label', `查看第 ${index} 项改动说明`);
+    badge.title = '查看右侧逻辑说明'; badge.setAttribute('aria-label', `查看第 ${index} 项逻辑说明`);
     Object.assign(badge.style, {position:'absolute',left:'50%',top:'50%',transform:'translate(-50%,-50%)',zIndex:'2',width:'28px',height:'28px',padding:'0',border:`2px solid #fff`,borderRadius:'50%',background:theme.solid,color:'#fff',boxShadow:`0 2px 7px ${theme.shadow}`,font:'700 12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif',cursor:'pointer',pointerEvents:'auto'});
     badge.addEventListener('click', event => {
       event.preventDefault(); event.stopPropagation();
@@ -1358,6 +1484,7 @@ function injectEditorStyles(doc) {
     body.ve-edit-mode .ve-drop-target { outline:3px solid #13a67b !important; outline-offset:3px !important; background-color:#ecfcf5 !important; }
     body.ve-edit-mode.ve-pointer-move .ve-selected { cursor:move !important; touch-action:none; }
     body.ve-edit-mode.ve-pointer-select, body.ve-edit-mode.ve-pointer-select * { cursor:crosshair !important; user-select:none !important; touch-action:none; }
+    body.ve-edit-mode .ve-swap-source { opacity:.4 !important; outline:0 !important; box-shadow:none !important; }
     body.ve-edit-mode .ve-dragging { opacity:.45 !important; }
     body.ve-edit-mode [contenteditable="true"] { cursor:text !important; outline:2px solid #18a57b !important; background:#effcf8 !important; color:#29435d !important; }
     body.ve-preview-mode .ve-selected, body.ve-preview-mode .ve-hover { outline:0 !important; box-shadow:none !important; }
@@ -1405,6 +1532,8 @@ function setupFrame() {
   prepareReorderables(doc);
 
   doc.addEventListener('scroll',()=>{clearHover();if(moveGesture || sweepGesture)cancelMovement();updateResizeHandle();},true);
+  doc.addEventListener('pointerdown', handleFrameTextPointerDown, true);
+  doc.addEventListener('pointerdown', handleFrameControlPointerDown, true);
   doc.addEventListener('pointerdown', beginSweepSelection, true);
   doc.addEventListener('pointermove', updateSweepSelection, true);
   doc.addEventListener('pointerup', finishSweepSelection, true);
@@ -1445,6 +1574,16 @@ function setupFrame() {
   if (showChanges) renderChangeMarkers();
 }
 
+// Native fields are components while editing; focusing them would route Delete
+// and arrow keys into the field instead of the canvas. Preview keeps native input.
+function handleFrameControlPointerDown(event) {
+  if(mode!=='edit' || event.button!==0 || !event.target.closest?.('input,textarea,select')
+    || event.target.closest?.('[contenteditable="true"],#editor-change-overlay,#editor-box-selection'))return;
+  event.preventDefault();
+  frameDocument().activeElement?.blur();
+  frame.contentWindow.focus();
+}
+
 function handleFrameClick(event) {
   if (suppressNextClick) {event.preventDefault();event.stopImmediatePropagation();return;}
   if (mode !== 'edit') return;
@@ -1459,6 +1598,10 @@ function handleFrameClick(event) {
   }
   event.preventDefault();
   event.stopImmediatePropagation();
+  if(target.matches('input,textarea,select')) {
+    frameDocument().activeElement?.blur();
+    frame.contentWindow.focus();
+  }
   selectElement(target, { additive:event.shiftKey });
 }
 
@@ -1488,9 +1631,53 @@ function handleFrameHoverOut(event) {
   if(!event.relatedTarget || !frameDocument().documentElement.contains(event.relatedTarget))clearHover();
 }
 
+function editFormControlText(target) {
+  const textTarget=target.matches('select') ? target.selectedOptions[0] || target.options[0] : target;
+  if(!textTarget)return;
+  const original=target.matches('input,textarea') ? target.value : textTarget.textContent;
+  const change=value=>target.matches('input') ? {attributes:{value}} : {text:value};
+  if(!allowChange(textTarget,change(original)))return;
+  document.getElementById('editor-form-text-edit')?.blur();
+  const input=document.createElement('input');
+  input.id='editor-form-text-edit';input.type='text';input.value=original;
+  input.placeholder=target.getAttribute('placeholder') || '';
+  input.setAttribute('aria-label',target.matches('select')?'编辑下拉框文字':'编辑输入框文字');
+  const rect=target.getBoundingClientRect(),frameRect=frame.getBoundingClientRect(),scale=frameRect.width/frame.clientWidth;
+  const style=frame.contentWindow.getComputedStyle(target);
+  Object.assign(input.style,{position:'fixed',left:`${frameRect.left+rect.left*scale}px`,top:`${frameRect.top+rect.top*scale}px`,width:`${rect.width*scale}px`,height:`${rect.height*scale}px`,boxSizing:'border-box',zIndex:'2147483647',border:'2px solid #2d79e6',borderRadius:`${parseFloat(style.borderRadius)*scale}px`,background:style.backgroundColor,color:style.color,fontFamily:style.fontFamily,fontSize:`${parseFloat(style.fontSize)*scale}px`,padding:`0 ${parseFloat(style.paddingLeft)*scale}px`,outline:'none'});
+  let finished=false;
+  const finish=save=>{
+    if(finished)return;finished=true;
+    const value=input.value;input.remove();
+    if(save && textTarget.isConnected && value!==original)commitElementChange(textTarget,change(value));
+    if(selectedElement?.isConnected)refreshSelection();
+  };
+  input.addEventListener('blur',()=>finish(true));
+  input.addEventListener('keydown',event=>{
+    if(event.isComposing)return;
+    if(event.key==='Enter' || event.key==='Escape') {
+      event.preventDefault();event.stopImmediatePropagation();
+      finish(event.key==='Enter');frame.contentWindow.focus();
+    }
+  });
+  document.body.append(input);input.focus();input.select();
+  document.getElementById('text-toolbar').hidden=true;
+}
+
+let activeTextEdit = null;
+function finishTextEditing(save=true) {
+  activeTextEdit?.finish(save);
+}
+function handleFrameTextPointerDown(event) {
+  if(activeTextEdit && !activeTextEdit.target.contains(event.target))finishTextEditing();
+}
+
 function handleFrameDoubleClick(event) {
   if (mode !== 'edit' || event.target.closest?.('[contenteditable="true"]')) return;
   const target = pickCanvasTarget(event);
+  if(target?.matches('input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="button"]):not([type="submit"]),textarea,select') && !isLocked(target)) {
+    event.preventDefault();event.stopImmediatePropagation();selectElement(target);editFormControlText(target);return;
+  }
   if (!target || isLocked(target) || target.childElementCount > 0 || target.matches('input,textarea,select,img,svg,video,canvas')) return;
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -1508,28 +1695,41 @@ function handleFrameDoubleClick(event) {
     else {range.selectNodeContents(target);range.collapse(false);}
   }
   range.collapse(true);
+  const originalEditable=target.getAttribute('contenteditable');
   target.contentEditable = 'true';
   target.focus();
   const selection = frame.contentWindow.getSelection();
   selection.removeAllRanges();
   selection.addRange(range);
 
-  const finish = () => {
+  let finished=false;
+  const onBlur=()=>finish(true);
+  const finish = (save=true) => {
+    if(finished)return;
+    finished=true;activeTextEdit=null;
     const text=target.textContent.trim();
-    target.contentEditable = 'false';
-    target.textContent=originalText;
-    commitElementChange(target, { text });
-    target.removeEventListener('blur', finish);
+    target.removeEventListener('blur', onBlur);
     target.removeEventListener('keydown', onKeyDown);
+    if(originalEditable===null)target.removeAttribute('contenteditable');
+    else target.setAttribute('contenteditable',originalEditable);
+    target.textContent=originalText;
+    target.blur();
+    selection.removeAllRanges();
+    if(save && text!==originalText && target.isConnected)commitElementChange(target, { text });
   };
   const onKeyDown = keyboardEvent => {
+    if(keyboardEvent.isComposing)return;
     if (keyboardEvent.key === 'Enter' && !keyboardEvent.shiftKey) {
-      keyboardEvent.preventDefault();
-      target.blur();
+      keyboardEvent.preventDefault();keyboardEvent.stopImmediatePropagation();
+      finish();frame.contentWindow.focus();
     }
-    if (keyboardEvent.key === 'Escape') reloadFrame();
+    if (keyboardEvent.key === 'Escape') {
+      keyboardEvent.preventDefault();keyboardEvent.stopImmediatePropagation();
+      finish(false);clearSelection();frame.contentWindow.focus();
+    }
   };
-  target.addEventListener('blur', finish);
+  activeTextEdit={target,finish};
+  target.addEventListener('blur', onBlur);
   target.addEventListener('keydown', onKeyDown);
 }
 
@@ -1582,6 +1782,7 @@ function handleDragEnd() {
 }
 
 function selectElement(element, { additive=false } = {}) {
+  finishTextEditing();
   clearHover();
   if(isLocked(element)){showToast('此图层已锁定，请先在左侧解锁');return;}
   commitCardForm();
@@ -1612,6 +1813,7 @@ function refreshSelection() {
   requestAnimationFrame(updateTextToolbar);
 }
 function clearSelection() {
+  finishTextEditing();
   document.getElementById('text-toolbar').hidden=true;
   clearHover();
   finishResize(false);
@@ -1712,7 +1914,7 @@ function updateSelectedStyle(styles) {
 
 function updateTextToolbar() {
   const toolbar=document.getElementById('text-toolbar');
-  const visible=mode==='edit' && selectedElements.size===1 && selectedElement?.isConnected && !isLocked(selectedElement)
+  const visible=!(pointerMode==='swap' && moveGesture?.moved) && mode==='edit' && selectedElements.size===1 && selectedElement?.isConnected && !isLocked(selectedElement)
     && !editorMain.classList.contains('ai-open') && isTextToolbarTarget(selectedElement)
 ;
   toolbar.hidden=!visible;
@@ -1977,11 +2179,11 @@ document.getElementById('share-lan-button').onclick=async()=>{
       const response=await fetch('../prototype.html');if(!response.ok)throw new Error('无法读取分享页面');
       html=await createStandaloneHtml({source:await response.text(),patches:state.patches,fetchImpl:path=>fetch(new URL(path==='compare-versions.html'?path:`../${path}`,location.href))});
     }
-    const response=await fetch(shareProject,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'create',...(html?{html}:{})})});
+    const response=await fetch(shareProject,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'create',viewportWidth:viewportSizes[viewportName][0],...(html?{html}:{})})});
     const result=await response.json();if(!response.ok)throw new Error(result.error||'分享失败');
     for(const url of result.urls){const option=document.createElement('option');option.value=url;option.textContent=url;shareLink.append(option);}
     shareLink.hidden=false;shareCopy.disabled=false;shareStop.disabled=false;
-    shareStatus.textContent=result.urls.length>1?'分享已开启。检测到多个网络地址；同事无法打开时，可换一个地址。':'分享已开启，复制链接发给同事即可。';
+    shareStatus.textContent=`按当前画布宽度 ${viewportSizes[viewportName][0]}px 分享，查看时自动缩放。`+(projectId==='builtin'?'分享已开启，内置页面修改后需重新分享。':'分享已开启，链接长期保留，服务重启后自动恢复；保存后自动同步。')+(result.urls.length>1?'检测到多个网络地址；无法打开时可换一个地址。':'复制链接发给同事即可。');
   }catch(error){if(!shareDialog.open)shareDialog.showModal();shareStatus.textContent='分享失败：'+error.message;}
   finally{shareBusy=false;button.disabled=false;}
 };
@@ -2021,8 +2223,8 @@ const sourceStatus=document.getElementById('source-dialog-status');
 const sourceConflicts=document.getElementById('source-conflicts');
 const sourceConfirm=document.getElementById('source-confirm');
 let sourceBusy=false;
-async function sourceRequest(path,body) {
-  const response=await fetch(projectEndpoint(path),body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});
+async function sourceRequest(path,body,signal) {
+  const response=await fetch(projectEndpoint(path),body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal}:{cache:'no-store',signal});
   const value=await response.json();if(!response.ok)throw new Error(value.error||'源码操作失败');return value;
 }
 function rememberSource(value) {
@@ -2255,6 +2457,7 @@ function layerChildren(node) {
   return [...node.children].filter(child => !child.matches('script,style,template,link,svg *,#editor-change-overlay,[id^="ve-editor-"]'));
 }
 function setLayersOpen(open) {
+  if(open)editorMain.classList.remove('sidebar-collapsed');
   editorMain.classList.toggle('layers-open',open);
   document.getElementById('structure-panel').hidden=!open;
   document.getElementById('layers-toggle').setAttribute('aria-expanded',String(open));
@@ -2265,6 +2468,7 @@ function setLayersOpen(open) {
     renderLayers();
   }
   resizeCanvas();
+  updateSidebarToggle();
 }
 document.getElementById('layers-toggle').addEventListener('click',()=>{
   if(aiBusy)return;
@@ -2492,11 +2696,14 @@ document.getElementById('duplicate-element').onclick=()=>{
   showToast('已复制，可独立修改文字与布局');
 };
 const componentTemplates={
+  ...chartTemplates,
   card:'<div class="ha-metric" style="min-width:0;padding:18px;background:#fff;border:1px solid #dce4ed;border-radius:12px"><div class="ha-metric-top">新增指标</div><div class="ha-metric-main"><strong>128<small> 人</small></strong></div><em>演示数据</em></div>',
   container:'<div style="min-height:100px;padding:16px;border:1px dashed #a6bad1;border-radius:10px;display:grid;gap:12px"><p style="margin:0;color:#758296">新容器 · 演示数据</p></div>',
   heading:'<h3 style="margin:0;font-size:18px;color:#17243a">标题</h3>',
   text:'<p style="margin:0;font-size:14px;line-height:1.6;color:#52647a">文字</p>',
   button:'<button type="button" style="padding:10px 18px;border:0;border-radius:6px;background:#2468d8;color:#fff">演示按钮</button>',
+  select:'<select aria-label="请选择" style="height:42px;padding:0 12px;border:1px solid #dce4ed;border-radius:8px;background:#fff;color:#334155;font-family:system-ui,sans-serif;font-size:14px"><option value="" selected disabled>请选择</option><option value="option-1">选项一</option><option value="option-2">选项二</option><option value="option-3">选项三</option></select>',
+  input:'<input type="text" aria-label="输入框" placeholder="请输入内容" style="height:42px;padding:0 12px;border:1px solid #dce4ed;border-radius:8px;background:#fff;color:#334155;font-family:system-ui,sans-serif;font-size:14px" />',
   circle:'<div aria-label="圆形" style="height:160px;border-radius:50%;background:#dbeafe;border:1px solid #93b4ed"></div>',
   rectangle:'<div aria-label="矩形" style="height:140px;background:#dbeafe;border:1px solid #93b4ed"></div>',
   divider:'<hr style="width:100%;margin:12px 0;border:0;border-top:1px solid #dce4ed" />'
@@ -2531,7 +2738,8 @@ function addPlacedComponent(type,parent,x,y,imageData=null) {
   const template=doc.createElement('template');template.innerHTML=type==='image'?'<img alt="本地图片" style="height:auto;object-fit:contain;display:block" />':componentTemplates[type];
   if(imageData) {template.content.firstElementChild.src=imageData.url;template.content.firstElementChild.alt=imageData.name;}
   const copy=prepareSnapshot(template.content.firstElementChild);
-  const width={card:240,container:280,heading:240,text:280,button:130,divider:240,circle:160,rectangle:240,image:Math.min(320,imageData?.width||320)}[type];
+  copy.dataset.editorComponent=type;
+  const width={card:240,container:280,heading:240,text:280,button:130,select:240,input:240,divider:240,circle:160,rectangle:240,bar:340,line:340,donut:300,image:Math.min(320,imageData?.width||320)}[type];
   Object.assign(copy.style,{position:'absolute',width:['heading','text'].includes(type)?'80px':`${width}px`,boxSizing:'border-box',margin:'0',zIndex:'1'});
   // Use the existing containing block without changing the container's styles.
   // Making a static container relative would relocate its existing absolute children.
@@ -2618,6 +2826,7 @@ function updateResizeHandle() {
   const handle=document.getElementById('element-resize-handle');
   if(!handle)return;
   handle.hidden=true;
+  if(pointerMode==='swap' && moveGesture?.moved)return;
   if(mode!=='edit' || !selectedElement?.isConnected || selectedElements.size!==1 || isLocked(selectedElement))return;
   const bounds=selectedElement.getBoundingClientRect(), frameBounds=frame.getBoundingClientRect();
   const scale=frameBounds.width/frame.clientWidth;
@@ -2629,6 +2838,7 @@ function updateResizeHandle() {
 function finishResize(commit) {
   if(!resizeGesture)return;
   const gesture=resizeGesture;resizeGesture=null;
+  document.getElementById('editor-alignment-guides')?.remove();
   const styles={width:gesture.element.style.width,height:gesture.element.style.height};
   Object.assign(gesture.element.style,gesture.before);
   if(commit) {commitChanges([{element:gesture.element,styles}]);fillInspector(gesture.element);showToast('尺寸已调整，可撤销');}
@@ -2640,7 +2850,7 @@ resizeHandle.addEventListener('pointerdown',event=>{
   if(!allowChange(selectedElement))return;
   commitCardForm();cancelMovement();
   const style=frame.contentWindow.getComputedStyle(selectedElement),rect=selectedElement.getBoundingClientRect();
-  resizeGesture={element:selectedElement,x:event.clientX,y:event.clientY,scale:frame.getBoundingClientRect().width/frame.clientWidth,width:parseFloat(style.width)||rect.width,height:parseFloat(style.height)||rect.height,before:{width:selectedElement.style.width,height:selectedElement.style.height}};
+  resizeGesture={element:selectedElement,x:event.clientX,y:event.clientY,scale:frame.getBoundingClientRect().width/frame.clientWidth,width:parseFloat(style.width)||rect.width,height:parseFloat(style.height)||rect.height,references:alignmentReferences(),before:{width:selectedElement.style.width,height:selectedElement.style.height}};
   resizeHandle.setPointerCapture(event.pointerId);event.preventDefault();
 });
 resizeHandle.addEventListener('pointermove',event=>{
@@ -2648,6 +2858,14 @@ resizeHandle.addEventListener('pointermove',event=>{
   const g=resizeGesture;
   g.element.style.width=`${Math.max(16,Math.round(g.width+(event.clientX-g.x)/g.scale))}px`;
   g.element.style.height=`${Math.max(16,Math.round(g.height+(event.clientY-g.y)/g.scale))}px`;
+  document.getElementById('editor-alignment-guides')?.remove();
+  if(!event.altKey) {
+    const references=g.references.filter(node=>node.isConnected).map(node=>node.getBoundingClientRect());
+    const snap=resizeAlignmentSnap(g.element.getBoundingClientRect(),references,6/g.scale);
+    if(snap.x)g.element.style.width=`${Math.max(16,parseFloat(g.element.style.width)+snap.x.delta)}px`;
+    if(snap.y)g.element.style.height=`${Math.max(16,parseFloat(g.element.style.height)+snap.y.delta)}px`;
+    renderAlignmentGuides(g.element.getBoundingClientRect(),references,g.scale);
+  }
   updateResizeHandle();
 });
 resizeHandle.addEventListener('pointerup',()=>finishResize(true));
@@ -2805,15 +3023,63 @@ const aiAttachments=createAIAttachments({
 });
 frame.addEventListener('load',()=>aiAttachments.cancelRegion());
 function pendingFingerprint(){return JSON.stringify([state.patches,aiChat.value(),aiAttachments.fingerprint()]);}
-function updateAIChatControls(){aiChatSend.disabled=aiBusy || aiAttachments.reading() || !aiChat.value() || !projectReady;}
+let aiProgressTimer=null,aiProgressStarted=0,aiAbortController=null;
+const aiStopButton=document.getElementById('ai-stop');
+aiStopButton.onclick=()=>{if(!aiBusy || !aiAbortController || document.getElementById('ai-run-state').dataset.phase==='save')return;aiStopButton.disabled=true;aiStopButton.textContent='正在停止…';aiAbortController.abort();};
+function updateAIProgressElapsed() {
+  const seconds=Math.floor((performance.now()-aiProgressStarted)/1000);
+  const running=document.getElementById('ai-run-state').dataset.state==='running';
+  document.getElementById('ai-run-elapsed').textContent=`${running?'已等待':'用时'} ${seconds} 秒`;
+}
+function setAIProgress(phase) {
+  const panel=document.getElementById('ai-run-state');
+  if(panel.dataset.state!=='running') {
+    clearInterval(aiProgressTimer);aiProgressStarted=performance.now();
+    aiProgressTimer=setInterval(updateAIProgressElapsed,1000);
+  }
+  panel.hidden=false;panel.dataset.state='running';panel.dataset.phase=phase;
+  aiStopButton.hidden=false;aiStopButton.disabled=phase==='save';aiStopButton.textContent=phase==='save'?'正在保存…':'停止 AI 修改';
+  document.getElementById('ai-run-icon').textContent='';
+  document.getElementById('ai-run-title').textContent='AI 修改中';
+  document.getElementById('ai-run-detail').textContent={prepare:'正在保存当前修改，准备交给 AI…',generate:'模型正在生成修改，收到结果后会自动检查并保存。',verify:'已收到修改，正在检查页面效果…',save:'检查已通过，正在备份并保存源码…'}[phase];
+  const phases=['generate','verify','save'],current=phases.indexOf(phase);
+  for(const step of panel.querySelectorAll('[data-phase]')) {
+    const index=phases.indexOf(step.dataset.phase);
+    step.classList.remove('is-failed');
+    step.classList.toggle('is-active',index===current);step.classList.toggle('is-done',index<current);
+    if(index===current)step.setAttribute('aria-current','step');else step.removeAttribute('aria-current');
+  }
+  addAIProcess({prepare:'准备修改，保存当前草稿。',generate:'正在等待模型返回修改结果。',verify:'修改已生成，正在检查页面效果。',save:'检查已通过，正在备份并保存源码。'}[phase]);
+  updateAIProgressElapsed();
+}
+function finishAIProgress(error=null) {
+  clearInterval(aiProgressTimer);aiProgressTimer=null;
+  const stopped=error?.name==='AbortError';
+  aiStopButton.hidden=true;
+  const panel=document.getElementById('ai-run-state');panel.dataset.state=stopped?'stopped':error?'error':'success';
+  document.getElementById('ai-run-icon').textContent=stopped?'■':error?'!':'✓';
+  document.getElementById('ai-run-title').textContent=stopped?'AI 修改已停止':error?'AI 修改失败':'修改已保存';
+  document.getElementById('ai-run-detail').textContent=stopped?'本次 AI 修改未保存，要求和附件已保留，可重新发送。':error?'本次处理已停止：'+error.message:'源码已保存并自动备份，可以继续修改。';
+  for(const step of panel.querySelectorAll('[data-phase]')){step.classList.remove('is-active');step.classList.toggle('is-failed',Boolean(error) && !stopped && step.dataset.phase===panel.dataset.phase);step.removeAttribute('aria-current');if(!error)step.classList.add('is-done');}
+  addAIProcess(stopped?'已停止，本次 AI 修改未保存。':error?'处理失败：'+error.message:'已保存修改，源码备份完成。');
+  updateAIProgressElapsed();
+}
+function updateAIChatControls(){
+  aiChatSend.disabled=aiBusy || aiAttachments.reading() || !aiChat.value() || !projectReady;
+  aiChatSend.textContent=aiBusy?'AI 修改中…':'发送并修改 ↑';
+  aiChatSend.classList.toggle('is-running',aiBusy);
+  document.getElementById('ai-chat-button').classList.toggle('ai-is-running',aiBusy);
+}
 aiChatInput.addEventListener('input',()=>{updateAIChatControls();if(aiProposal){aiStatus.textContent='修改要求已变化，请重新生成并验证。';}});
 aiChatSend.onclick=()=>generateAI();
 aiChatInput.addEventListener('keydown',event=>{if(event.key==='Enter' && (event.metaKey || event.ctrlKey) && !event.isComposing){event.preventDefault();if(!aiChatSend.disabled)void generateAI();}});
 aiDialog.addEventListener('cancel',event=>{if(aiBusy)event.preventDefault();});
-aiDialog.addEventListener('close',()=>{aiAttachments.cancelRegion();editorMain.classList.remove('ai-open');document.getElementById('ai-chat-button').setAttribute('aria-expanded','false');resizeCanvas();updateTextToolbar();});
+aiDialog.addEventListener('close',()=>{aiAttachments.cancelRegion();editorMain.classList.remove('ai-open');document.getElementById('ai-chat-button').setAttribute('aria-expanded','false');updateSidebarToggle();resizeCanvas();updateTextToolbar();});
 updateAIChatControls();
 async function openAI(auto=false) {
+  editorMain.classList.remove('sidebar-collapsed');
   editorMain.classList.add('ai-open');
+  updateSidebarToggle();
   document.getElementById('ai-chat-button').setAttribute('aria-expanded','true');
   if(!aiDialog.open)aiDialog.show();
   resizeCanvas();updateTextToolbar();
@@ -2838,35 +3104,75 @@ document.getElementById('ai-close').onclick=()=>{if(!aiBusy)aiDialog.close();};
 document.getElementById('ai-settings-save').onclick=async()=>{
   try{const value=await sourceRequest('/api/ai/settings',{endpoint:document.getElementById('ai-endpoint').value,model:document.getElementById('ai-model').value,apiKeyEnv:document.getElementById('ai-key-env').value,apiKey:document.getElementById('ai-api-key').value});document.getElementById('ai-key-env').value=value.apiKeyEnv||'';if(value.hasAPIKey){document.getElementById('ai-api-key').value='';document.getElementById('ai-api-key').placeholder='密钥已保存，留空继续使用';}const connection=document.getElementById('ai-connection');connection.textContent=value.ready?'已配置':'待设置密钥';connection.dataset.ready=String(value.ready);aiStatus.textContent=value.ready?'接口设置已保存。':'设置已保存；请设置密钥环境变量并重启服务。';}catch(error){aiStatus.textContent=error.message;}
 };
+function addAIProcess(message) {
+  const log=document.getElementById('ai-process-log');
+  if(log.lastElementChild?.textContent===message)return;
+  const item=document.createElement('li');item.textContent=message;log.append(item);
+}
+async function generateAIStream(body,signal) {
+  const response=await fetch(projectEndpoint('/api/ai/generate'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...body,stream:true}),signal});
+  if(!response.ok){const error=await response.json();throw new Error(error.error||'AI 请求失败');}
+  if(!response.headers.get('content-type')?.includes('text/event-stream')){
+    const proposal=await response.json();
+    if(!proposal.id || !proposal.previewUrl)throw new Error(proposal.error||'编辑器服务响应格式不兼容，请重启服务后重试');
+    addAIProcess('当前服务返回完整结果，已接收修改，继续检查。');
+    document.getElementById('ai-live-summary').textContent=proposal.explanation||'已收到完整修改结果。';
+    return proposal;
+  }
+  let proposal=null;
+  await readAIEvents(response,event=>{
+    if(event.type==='error')throw new Error(event.message);
+    if(event.type==='result'){proposal=event.proposal;if(document.getElementById('ai-live-summary').textContent==='等待模型返回处理说明…')document.getElementById('ai-live-summary').textContent=proposal.explanation||'模型未返回处理摘要，处理步骤见下方记录。';}
+    if(event.type==='phase')addAIProcess(event.message);
+    if(event.type==='summary')document.getElementById('ai-live-summary').textContent=event.text;
+    if(event.type==='output')document.getElementById('ai-stream-received').textContent=`已接收 ${event.characters} 字`;
+  });
+  if(!proposal)throw new Error('流式连接中断，未收到完整修改结果，请重试');
+  return proposal;
+}
+function waitForAIWork(work,signal) {
+  signal.throwIfAborted();
+  return new Promise((resolve,reject)=>{
+    const cancel=()=>reject(signal.reason);
+    signal.addEventListener('abort',cancel,{once:true});
+    Promise.resolve(work).then(resolve,reject).finally(()=>signal.removeEventListener('abort',cancel));
+  });
+}
 async function generateAI(request=aiChat.value()) {
   if(aiBusy || aiAttachments.reading() || !projectReady)return;
   const attachments=request?aiAttachments.payload():{images:[],selection:null};
-  commitCardForm();
-  if(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'){
-    aiStatus.textContent='正在保存普通修改并保留 AI 待办…';
-    await saveToSource({},null,{autoAI:false});
-    if(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'){aiStatus.textContent='普通修改尚未保存，请处理保存冲突或错误后重试。';return;}
-  }
-  aiBusy=true;aiProposal=null;aiRequest=request;aiFingerprint=pendingFingerprint();
-  const history=aiChat.history();if(request)aiChat.add('user',request+(attachments.selection?'\n引用区域：'+(attachments.selection.elements.map(item=>item.label).join('、')||'框选区域'):'')+(attachments.images.length?'\n截图：'+attachments.images.map(image=>image.name).join('、'):''));
-  aiChatInput.disabled=true;aiAttachments.setBusy(true);document.getElementById('ai-close').disabled=true;updateAIChatControls();
-  const button=document.getElementById('ai-generate');button.disabled=true;aiStatus.textContent='模型正在修改最新源码…';
+  const button=document.getElementById('ai-generate');
+  const process=document.getElementById('ai-process');process.hidden=false;process.open=true;
+  document.getElementById('ai-process-log').replaceChildren();document.getElementById('ai-live-summary').textContent='等待模型返回处理说明…';document.getElementById('ai-stream-received').textContent='';
+  aiAbortController=new AbortController();const signal=aiAbortController.signal;
+  aiBusy=true;aiChatInput.disabled=true;aiAttachments.setBusy(true);document.getElementById('ai-close').disabled=true;
+  button.disabled=true;updateAIChatControls();setAIProgress('prepare');
   let baselineFrame=null,previewFrame=null;
   try {
-    const proposal=await sourceRequest('/api/ai/generate',{request,history:request?history:[],...attachments});
+    commitCardForm();
+    if(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'){
+      aiStatus.textContent='正在保存普通修改并保留 AI 待办…';
+      await saveToSource({},null,{autoAI:false});
+      if(localStorage.getItem(DRAFT_DIRTY_KEY)==='1')throw new Error('普通修改尚未保存，请处理保存冲突或错误后重试');
+    }
+    signal.throwIfAborted();
+    aiProposal=null;aiRequest=request;aiFingerprint=pendingFingerprint();
+    const history=aiChat.history();if(request)aiChat.add('user',request+(attachments.selection?'\n引用区域：'+(attachments.selection.elements.map(item=>item.label).join('、')||'框选区域'):'')+(attachments.images.length?'\n截图：'+attachments.images.map(image=>image.name).join('、'):''));
+    aiStatus.textContent='模型正在修改最新源码…';setAIProgress('generate');
+    const proposal=await generateAIStream({request,history:request?history:[],...attachments},signal);
+    signal.throwIfAborted();
     if(aiFingerprint!==pendingFingerprint())throw new Error('生成期间草稿发生变化，请保存后重新生成');
     aiProposal=proposal;document.getElementById('ai-results').hidden=false;
-    const diff=document.getElementById('ai-diff');diff.replaceChildren();
-    for(const change of proposal.changes){const details=document.createElement('details'),title=document.createElement('summary'),before=document.createElement('pre'),after=document.createElement('pre');title.textContent=change.path+' · 查看修改前后';before.textContent='修改前\n'+change.before;after.textContent='修改后\n'+change.after;details.append(title,before,after);diff.append(details);}
-    aiStatus.textContent='正在检查修改后的页面效果…';
+    renderSourceDiff(document,document.getElementById('ai-diff'),proposal.changes);
+    aiStatus.textContent='正在检查修改后的页面效果…';setAIProgress('verify');
     const preview=document.createElement('iframe');previewFrame=preview;preview.dataset.aiVerification='true';preview.setAttribute('aria-hidden','true');preview.tabIndex=-1;
     Object.assign(preview.style,{position:'fixed',left:'-20000px',top:'0',width:`${frame.clientWidth}px`,height:`${frame.clientHeight}px`,border:'0',pointerEvents:'none'});
     if(!proposal.baselineUrl)throw new Error('服务未提供原页面验证基线，请重启编辑器服务后重试');
     baselineFrame=document.createElement('iframe');baselineFrame.dataset.aiBaseline='true';baselineFrame.setAttribute('aria-hidden','true');baselineFrame.tabIndex=-1;
     Object.assign(baselineFrame.style,{position:'fixed',left:'-10000px',top:'0',width:`${frame.clientWidth}px`,height:`${frame.clientHeight}px`,border:'0',pointerEvents:'none'});
-    await Promise.all([loadAIFrame(preview,proposal.previewUrl,document.body),loadAIFrame(baselineFrame,proposal.baselineUrl,document.body)]);
+    await waitForAIWork(Promise.all([loadAIFrame(preview,proposal.previewUrl,document.body),loadAIFrame(baselineFrame,proposal.baselineUrl,document.body)]),signal);
     let failures=[],stable=0;
-    for(let attempt=0;attempt<20;attempt++){await new Promise(resolve=>setTimeout(resolve,250));failures=await verifyAIPage(preview.contentDocument,proposal.pending);stable=failures.length?0:stable+1;if(stable>=4)break;}
+    for(let attempt=0;attempt<20;attempt++){signal.throwIfAborted();await new Promise(resolve=>setTimeout(resolve,250));signal.throwIfAborted();failures=await verifyAIPage(preview.contentDocument,proposal.pending);stable=failures.length?0:stable+1;if(stable>=4)break;}
     if(stable<4 && !failures.length)failures.push('修改后的页面效果尚未稳定，请重试');
     const previewErrors=preview.contentWindow.__veAIErrors,baselineErrors=baselineFrame.contentWindow.__veAIErrors;
     if(!Array.isArray(previewErrors) || !Array.isArray(baselineErrors))throw new Error('无法读取预览或原页面的错误基线，请重新生成');
@@ -2876,11 +3182,18 @@ async function generateAI(request=aiChat.value()) {
     const oldIds=duplicateCounts(baselineFrame.contentDocument);
     for(const [id,count] of duplicateCounts(preview.contentDocument))if(count>1 && count>(oldIds.get(id)||0))failures.push('新增重复 ID：'+id);
     if(failures.length)throw new Error('页面效果未通过验证：'+failures.join('；'));
-    aiStatus.textContent='正在保存修改并刷新主界面…';
-    await applyAIProposal();
+    signal.throwIfAborted();
+    aiStatus.textContent='正在保存修改并刷新主界面…';setAIProgress('save');
+    await applyAIProposal();finishAIProgress();
     if(errorChanges.inherited.length)aiStatus.textContent+=`原页面已有 ${errorChanges.inherited.length} 项脚本或资源问题，本次未增加。`;
-  }catch(error){aiStatus.textContent=error.message+'。已保存的修改不受影响，修改要求与 AI 待办仍保留。';if(request)aiChat.add('assistant','生成失败，未写入：'+error.message);}
-  finally{baselineFrame?.remove();previewFrame?.remove();aiBusy=false;aiChatInput.disabled=false;aiAttachments.setBusy(false);document.getElementById('ai-close').disabled=false;button.disabled=!Object.keys(routePendingEdits().pending).length;updateAIChatControls();}
+  }catch(error){
+    const stopped=signal.aborted;
+    if(stopped)error=new DOMException('用户停止了本次 AI 修改','AbortError');
+    finishAIProgress(error);aiProposal=null;
+    aiStatus.textContent=stopped?'AI 修改已停止，本次修改未写入。修改要求、截图和待办已保留。':error.message+'。已保存的修改不受影响，修改要求与 AI 待办仍保留。';
+    if(request)aiChat.add('assistant',stopped?'已停止，本次 AI 修改未写入。':'生成失败，未写入：'+error.message);
+  }
+  finally{baselineFrame?.remove();previewFrame?.remove();aiAbortController=null;aiBusy=false;aiChatInput.disabled=false;aiAttachments.setBusy(false);document.getElementById('ai-close').disabled=false;button.disabled=!Object.keys(routePendingEdits().pending).length;updateAIChatControls();}
 }
 document.getElementById('ai-generate').onclick=()=>generateAI();
 async function applyAIProposal() {
@@ -2888,7 +3201,7 @@ async function applyAIProposal() {
   const explanation=aiProposal.explanation||aiRequest||'待办修改';
   const saved=await sourceRequest('/api/ai/apply',{id:aiProposal.id,verified:true});
   state=createEditorState({});rememberSource(saved);clearSelection();persistState('AI 修改已写入源码，历史版本已备份',{dirty:false});reloadFrame();aiProposal=null;
-  if(aiRequest){aiChat.add('assistant','已写入源码：'+explanation);aiChat.clearInput();aiAttachments.clear();}
+  if(aiRequest){aiChat.add('assistant','已写入源码：'+explanation,{durationMs:performance.now()-aiProgressStarted});aiChat.clearInput();aiAttachments.clear();}
   document.getElementById('ai-queue').open=false;document.getElementById('ai-pending-count').textContent='0';document.getElementById('ai-pending').replaceChildren();document.getElementById('ai-empty').hidden=false;
   aiStatus.textContent='已修改并保存：'+explanation+'。原源码已自动备份，可通过“恢复历史版本”找回。';showToast('AI 已修改并保存，主界面已刷新');
 }

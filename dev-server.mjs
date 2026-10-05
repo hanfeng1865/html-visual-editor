@@ -63,7 +63,7 @@ try {
 
 export function createDevServer({ rootDir = configuration.prototypeRoot || editorDirectory, editorDir = editorDirectory } = {}) {
   const ai=createAIService(editorDir);
-  const sharing=createLanShareService({mimeTypes});
+  const sharing=createLanShareService({mimeTypes,stateFile:join(editorDir,'.editor-workspaces','lan-shares.json')});
   const projectRoot = resolve(rootDir);
   const workspaces = createWorkspaceManager(projectRoot, { registryDir: join(editorDir, '.editor-workspaces') });
 
@@ -85,7 +85,20 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
       if(['/api/ai/generate','/api/ai/apply'].includes(url.pathname) && request.method==='POST') {
         const project=await workspaces.describe(url.searchParams.get('project')||'builtin',url.searchParams.get('entry')||undefined);
         const body=await readJsonBody(request,url.pathname.endsWith('generate')?8*1024*1024:2*1024*1024);
-        return json(response,200,url.pathname.endsWith('generate')?await ai.generate(project,body):await ai.apply(project,body));
+        if(url.pathname.endsWith('apply'))return json(response,200,await ai.apply(project,body));
+        const streaming=body.stream===true;
+        if(streaming)response.writeHead(200,{'content-type':'text/event-stream; charset=utf-8','cache-control':'no-cache, no-transform','x-accel-buffering':'no'});
+        const emit=event=>{if(!response.destroyed && !response.writableEnded)response.write(`data: ${JSON.stringify(event)}\n\n`);};
+        const controller=new AbortController();
+        const cancel=()=>{if(!response.writableEnded)controller.abort();};
+        response.once('close',cancel);
+        try {
+          if(response.destroyed)controller.abort();
+          const result=await ai.generate(project,body,{signal:controller.signal,onProgress:streaming?emit:undefined});
+          if(!response.destroyed){if(streaming){emit({type:'result',proposal:result});response.end();}else return json(response,200,result);}
+        } catch(error){if(!streaming)throw error;emit({type:'error',message:error.message||'AI 修改失败'});if(!response.destroyed)response.end();}
+        finally {response.off('close',cancel);}
+        return;
       }
       if(url.pathname.startsWith('/ai-preview/') || url.pathname.startsWith('/ai-baseline/')) {
         const [, ,id,...parts]=url.pathname.split('/');const value=ai.proposal(id);
@@ -143,14 +156,14 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
       if(url.pathname==='/api/lan-share' && request.method==='POST') {
         const project=await workspaces.describe(workspaceId,entry),body=await readJsonBody(request,25*1024*1024);
         const key=`${project.id}:${project.entry}`;
-        if(body.action==='stop')return json(response,200,sharing.stop(key));
+        if(body.action==='stop')return json(response,200,await sharing.stop(key));
         if(body.action!=='create')return json(response,400,{error:'分享操作无效'});
         let files;
         if(workspaceId==='builtin') {
           if(typeof body.html!=='string' || !body.html.trim())return json(response,400,{error:'请先生成分享页面'});
           files=[['index.html',Buffer.from(body.html)]];
         }else files=await exportProjectFiles(workspaces,workspaceId,entry,{}, {sourceOnly:true});
-        return json(response,200,await sharing.create(key,workspaceId==='builtin'?'index.html':project.entry,files));
+        return json(response,200,await sharing.create(key,workspaceId==='builtin'?'index.html':project.entry,files,{...(workspaceId==='builtin'?{}:{root:project.root}),viewportWidth:body.viewportWidth ?? 1440}));
       }
       if (url.pathname === '/api/projects/export' && request.method === 'POST') {
         const payload = await readJsonBody(request);
@@ -252,6 +265,8 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
       json(response, error.statusCode || 500, { error: error.message || '服务器错误' });
     }
   });
+  server.sharingReady=sharing.ready();
+  server.sharingReady.catch(()=>{});
   server.on('close',()=>{void sharing.close();});
   return server;
 }
@@ -265,6 +280,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const port = Number(argumentValue('--port', process.env.PORT || '4174'));
   const host = argumentValue('--host', '127.0.0.1');
   const server = createDevServer();
+  await server.sharingReady;
   server.listen(port, host, () => {
     console.log(`Visual editor development server: http://${host}:${port}/editor/editor.html`);
   });

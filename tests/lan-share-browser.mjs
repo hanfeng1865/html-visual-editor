@@ -16,6 +16,9 @@ await writeFile(join(project,'assets/icon.svg'),'<svg xmlns="http://www.w3.org/2
 const server=createDevServer({rootDir:temp,editorDir});await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const base=`http://127.0.0.1:${server.address().port}`;
 const projectConfig=await(await fetch(base+'/api/projects/open',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:project})})).json();
+const legacyShare=await(await fetch(`${base}/api/lan-share?project=${projectConfig.id}&entry=index.html`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'create'})})).json();
+const legacyUrl=new URL(legacyShare.urls[0]);legacyUrl.hostname='127.0.0.1';
+assert.match(await(await fetch(legacyUrl)).text(),/share-page-frame/,'older editor tabs that omit viewport width must receive the fixed-width preview');
 const browser=await chromium.launch({headless:true});
 try {
   const page=await browser.newPage({viewport:{width:1500,height:1000}}),frame=page.frameLocator('#prototype-frame');
@@ -28,13 +31,26 @@ try {
   assert.equal(await page.locator('#share-copy').textContent(),'✓ 复制成功');assert.equal(await page.locator('#share-copy').getAttribute('data-copied'),'true');
   assert.equal(await page.locator('#share-status').getAttribute('data-state'),'success');
   assert.match(await readFile(join(project,'index.html'),'utf8'),/Shared edit/,'sharing saves current edits first');
-  const shared=await browser.newPage();const localLink=new URL(link);localLink.hostname='127.0.0.1';
-  await shared.goto(localLink.href);assert.equal(await shared.locator('#title').textContent(),'Shared edit');assert.equal(await shared.locator('#title').evaluate(el=>getComputedStyle(el).color),'rgb(12, 34, 56)');
-  assert.equal(await shared.locator('img').evaluate(el=>el.complete && el.naturalWidth>0),true);await shared.locator('#counter').click();assert.equal(await shared.locator('#number').textContent(),'1');
+  const shared=await browser.newPage();let sharedContent;const localLink=new URL(link);localLink.hostname='127.0.0.1';
+  await shared.goto(localLink.href);sharedContent=shared.frame({name:'share-page'});assert.equal(await sharedContent.evaluate(()=>innerWidth),1440,'sharing preserves editor canvas width');assert.equal(await sharedContent.locator('#title').textContent(),'Shared edit');assert.equal(await sharedContent.locator('#title').evaluate(el=>getComputedStyle(el).color),'rgb(12, 34, 56)');
+  assert.equal(await sharedContent.locator('img').evaluate(el=>el.complete && el.naturalWidth>0),true);await sharedContent.locator('#counter').click();assert.equal(await sharedContent.locator('#number').textContent(),'1');
   assert.equal((await fetch(new URL('/api/projects',localLink))).status,404,'viewers cannot reach editor APIs');
-  await writeFile(join(project,'index.html'),original.replace('Original','New source'));await shared.reload();assert.equal(await shared.locator('#title').textContent(),'Shared edit','share remains a snapshot until refreshed');
-  await page.locator('#share-close').click();await page.reload();await frame.locator('body[data-ve-editor-ready=true]').waitFor();
-  assert.equal(await share(),link,'re-sharing updates the same link');await shared.goto(localLink.href);assert.equal(await shared.locator('#title').textContent(),'New source');
+  await page.locator('#share-close').click();
+  await frame.locator('#title').click({modifiers:['Alt']});await page.locator('#prop-text').fill('Saved again');await page.locator('#prop-text').dispatchEvent('change');
+  await page.locator('#save-button').click();
+  await sharedContent.waitForFunction(()=>document.getElementById('title').textContent==='Saved again');
+  assert.match(await readFile(join(project,'index.html'),'utf8'),/Saved again/,'ordinary editor saves sync without sharing again');
+  await writeFile(join(project,'index.html'),original.replace('Original','New source'));
+  await sharedContent.waitForFunction(()=>document.getElementById('title').textContent==='New source');
+  await writeFile(join(project,'assets/style.css'),'h1{color:rgb(65,43,21)}');
+  await sharedContent.waitForFunction(()=>getComputedStyle(document.getElementById('title')).color==='rgb(65, 43, 21)');
+  await writeFile(join(project,'assets/icon.svg'),'<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="red"/></svg>');
+  await sharedContent.waitForFunction(()=>document.querySelector('img').naturalWidth===40);
+  await writeFile(join(project,'assets/app.js'),'document.getElementById("counter").onclick=()=>document.getElementById("number").textContent="2";');
+  await sharedContent.waitForFunction(()=>document.getElementById('counter').onclick.toString().includes('"2"'));
+  await sharedContent.locator('#counter').click();assert.equal(await sharedContent.locator('#number').textContent(),'2');
+  await page.reload();await frame.locator('body[data-ve-editor-ready=true]').waitFor();
+  assert.equal(await share(),link,'re-sharing updates the same link');await shared.goto(localLink.href);sharedContent=shared.frame({name:'share-page'});assert.equal(await sharedContent.locator('#title').textContent(),'New source');
   await page.locator('#share-stop').click();await page.waitForFunction(()=>document.getElementById('share-status').textContent.includes('已停止分享'));assert.equal((await fetch(localLink)).status,404);
-  console.log('PASS: export share entry, save-before-sharing, local CSS/JS/images, read-only listener, stable-link updates and stop sharing');
+  console.log('PASS: export share entry, save-before-sharing, local CSS/JS/images, read-only listener, automatic HTML/CSS/JS updates, stable-link updates and stop sharing');
 }finally{await browser.close();await new Promise(r=>server.close(r));await rm(temp,{recursive:true,force:true});}

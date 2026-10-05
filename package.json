@@ -12,9 +12,12 @@
     "start": "node dev-server.mjs --port 4174",
     "share:source": "node share-source.mjs",
     "test": "node --test tests/*.test.mjs",
-    "test:browser": "node tests/source-save-browser.mjs && node tests/runtime-save-browser.mjs && node tests/saveability-browser.mjs && node tests/nearby-selection-browser.mjs && node tests/ai-fallback-browser.mjs && node tests/template-text-browser.mjs && node tests/ai-chat-browser.mjs && node tests/lan-share-browser.mjs"
+    "test:browser": "node tests/source-save-browser.mjs && node tests/runtime-save-browser.mjs && node tests/saveability-browser.mjs && node tests/nearby-selection-browser.mjs && node tests/text-deselection-browser.mjs && node tests/ai-fallback-browser.mjs && node tests/template-text-browser.mjs && node tests/ai-chat-browser.mjs && node tests/lan-share-browser.mjs && node tests/lan-share-viewport-browser.mjs && node tests/swap-browser.mjs"
   },
   "devDependencies": {
     "playwright": "^1.56.0"
+  },
+  "dependencies": {
+    "undici": "^5.29.0"
   }
 }

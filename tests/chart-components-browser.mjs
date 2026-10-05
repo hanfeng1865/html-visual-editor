@@ -1,0 +1,50 @@
+import {chromium} from 'playwright';
+import {createDevServer} from '../dev-server.mjs';
+import {mkdtemp,mkdir,writeFile,readFile,rm,cp} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import assert from 'node:assert/strict';
+const temp=await mkdtemp(join(tmpdir(),'chart-components-')),project=join(temp,'project');await mkdir(project);
+await writeFile(join(project,'index.html'),'<!doctype html><html><head><title>Charts</title></head><body><div id="host" style="position:relative;width:1100px;height:1000px"></div></body></html>');
+const editorDir=join(temp,'editor');
+await cp(resolve('.'),editorDir,{recursive:true,filter:p=>!['.git','node_modules','.editor-workspaces','editor-config.json'].includes(p.split(/[\\/]/).pop())});
+const server=createDevServer({rootDir:temp,editorDir});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+const base=`http://127.0.0.1:${server.address().port}`;
+const p=await(await fetch(base+'/api/projects/open',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:project})})).json();
+const browser=await chromium.launch({headless:true});
+try{
+ const page=await browser.newPage({viewport:{width:1600,height:1000}}),errors=[];page.setDefaultTimeout(8000);page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(`${base}/editor/editor.html?project=${p.id}&entry=index.html`);
+ const f=page.frameLocator('#prototype-frame');await f.locator('body[data-ve-editor-ready=true]').waitFor();
+ await page.locator('[data-mode=edit]').click();if(!await page.locator('#structure-panel').isVisible())await page.locator('#layers-toggle').click();await page.locator('[data-structure-tab=insert]').click();
+ assert.equal(await page.locator('.component-palette button').count(),14);
+ assert.equal(await page.locator('.component-palette button svg').count(),14);
+ for(const [i,type] of ['bar','line','donut'].entries()){
+  await f.locator('#host').click({position:{x:700,y:600},modifiers:['Alt']});
+  await page.locator(`[data-insert="${type}"]`).click();
+  const chart=f.locator(`[data-chart-type="${type}"]`);await chart.waitFor();
+  assert.equal(await chart.locator('svg').count(),1);assert.match(await chart.textContent(),/演示数据/);
+  assert.ok(await chart.evaluate(el=>el.getBoundingClientRect().height>200));
+  assert.equal(await chart.getAttribute('data-editor-component'),type);
+  await f.locator('#host').click({position:{x:900,y:600}});
+  await chart.click({position:{x:8,y:8}});
+  assert.ok(await chart.evaluate(el=>el.classList.contains('ve-selected')),'chart padding selects its root in the editor');
+  await chart.locator('svg').click({position:{x:100,y:80}});
+  assert.ok(await chart.evaluate(el=>el.classList.contains('ve-selected')),'chart graphic selects its root in the editor');
+ }
+ await page.locator('#undo-button').click();await f.locator('[data-chart-type="donut"]').waitFor({state:'detached'});
+ await f.locator('body[data-ve-editor-ready=true]').waitFor();
+ await page.locator('#redo-button').click();await f.locator('[data-chart-type="donut"]').waitFor();
+ await page.locator('#save-button').click();await page.waitForFunction(async url=>{const result=await(await fetch(url)).json();return Object.values(result.files||{}).some(text=>text.includes('data-chart-type'));},`${base}/api/source-state?project=${p.id}&entry=index.html`,{timeout:8000});
+ await page.reload();await f.locator('body[data-ve-editor-ready=true]').waitFor();
+ assert.equal(await f.locator('[data-chart-type]').count(),3);
+ await page.locator('[data-mode=edit]').click();
+ const reloaded=f.locator('[data-chart-type="donut"]');
+ await reloaded.click({position:{x:8,y:8}});
+ assert.ok(await reloaded.evaluate(el=>el.classList.contains('ve-selected')),'saved charts remain selectable after reload');
+ const saved=await readFile(join(project,'index.html'),'utf8');for(const type of ['bar','line','donut'])assert.ok(saved.includes(`data-chart-type="${type}"`));
+ const standalone=await browser.newPage();await standalone.goto(`file://${join(project,'index.html')}`);
+ assert.equal(await standalone.locator('[data-chart-type] svg').count(),3);
+ assert.ok(await standalone.locator('[data-chart-type="donut"] svg circle').count()===4);
+ assert.deepEqual(errors,[]);console.log('PASS: palette icons, three chart inserts and root selection, undo/redo, source save, reload selection and offline rendering.');
+}finally{await browser.close();await new Promise(r=>server.close(r));await rm(temp,{recursive:true,force:true});}

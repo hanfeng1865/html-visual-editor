@@ -37,7 +37,7 @@
 <body>
   <header>
     <div><h1>原型版本对比</h1><span class="note">上方为冻结的 V1.0，下方为持续修改的当前开发版 · 演示数据</span></div>
-    <div><button id="stack" class="active" type="button" disabled>上下</button><button id="changes-toggle" type="button" aria-pressed="false" title="显示或隐藏手动框选的标记">显示手动标记</button><button id="box-toggle" type="button" aria-pressed="false">框选改动</button><span id="annotation-status" role="status" style="font-size:11px;color:#718195;margin:0 8px"></span><a id="back" href="../prototype.html#human-admin">返回开发版</a></div>
+    <div><button id="stack" class="active" type="button" disabled>上下</button><button id="changes-toggle" type="button" aria-pressed="false" title="显示或隐藏手动框选的标记">显示手动标记</button><button id="box-toggle" type="button" aria-pressed="false">框选标记</button><span id="annotation-status" role="status" style="font-size:11px;color:#718195;margin:0 8px"></span><a id="back" href="../prototype.html#human-admin">返回开发版</a></div>
   </header>
   <main>
     <section><h2>V1.0 <span>冻结基线</span></h2><iframe id="baseline" title="V1.0 基线版本"></iframe></section>
@@ -186,8 +186,8 @@
       const button = doc.createElement('button');
       button.type = 'button';
       button.textContent = note ? '说明·' : '说明';
-      button.title = note || '查看或编辑改动说明';
-      button.setAttribute('aria-label', note ? '查看或编辑改动说明' : '添加改动说明');
+      button.title = note || '查看或编辑逻辑说明';
+      button.setAttribute('aria-label', note ? '查看或编辑逻辑说明' : '添加逻辑说明');
       Object.assign(button.style, {height:'18px',marginLeft:'6px',padding:'0 6px',border:'1px solid #ffffff88',borderRadius:'9px',background:note?'#fff':'#ffffff22',color:note?theme.button:'#fff',font:'700 10px/1 inherit',cursor:'pointer',pointerEvents:'auto'});
       button.addEventListener('pointerdown', event => event.stopPropagation());
       button.addEventListener('click', event => {
@@ -196,10 +196,10 @@
         const panel = doc.createElement('div');
         panel.className = 'comparison-note-editor';
         panel.setAttribute('role', 'dialog');
-        panel.setAttribute('aria-label', '改动说明');
+        panel.setAttribute('aria-label', '逻辑说明');
         Object.assign(panel.style, {boxSizing:'border-box',position:'fixed',zIndex:'2147483647',width:'min(520px, calc(100vw - 16px))',padding:'12px',border:'1px solid #b8d3ee',borderRadius:'8px',background:'#fff',boxShadow:'0 8px 24px #20354b33',color:'#334f68',pointerEvents:'auto'});
         const heading = doc.createElement('b');
-        heading.textContent = '改动说明';
+        heading.textContent = '逻辑说明';
         Object.assign(heading.style, {display:'block',marginBottom:'7px',fontSize:'12px'});
         const textarea = doc.createElement('textarea');
         textarea.value = note;
@@ -308,7 +308,7 @@
       selectionLayer?.remove(); selectionLayer = null;
       boxToggle.classList.remove('active');
       boxToggle.setAttribute('aria-pressed', 'false');
-      boxToggle.textContent = '框选改动';
+      boxToggle.textContent = '框选标记';
     }
 
     function startBoxSelection() {

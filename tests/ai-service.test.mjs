@@ -1,3 +1,4 @@
+import {Agent} from 'undici';
 import test from 'node:test';import assert from 'node:assert/strict';
 import {createServer} from 'node:http';import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';import {join} from 'node:path';import {tmpdir} from 'node:os';
 import {createAIService} from '../ai-service.mjs';import {ensureSourceOrigin,saveSource,readSourceState} from '../source-store.mjs';import {readVisualEdits} from '../visual-edits-store.mjs';
@@ -111,7 +112,7 @@ test('custom HTTP endpoints and direct keys work without leaking keys; stored ke
  }finally{await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true});}
 });
 
-test('natural language works without pending edits, includes compatibility rules and bounded conversation, requires confirmation',async()=>{
+test('natural language works without pending edits, includes compatibility rules and bounded conversation, requires confirmation',async(t)=>{
  const root=await mkdtemp(join(tmpdir(),'ai-chat-service-')),editor=join(root,'editor');
  const project={root,entry:'index.html',editsFile:join(root,'.visual-editor','page','visual-edits.json'),backupDir:join(root,'.visual-editor','page','backups')};
  const original='<h1 id="heading">Original</h1>';let requestBody;
@@ -120,8 +121,11 @@ test('natural language works without pending edits, includes compatibility rules
  try {
   await writeFile(join(root,'index.html'),original);
   const service=createAIService(editor);await service.settings({endpoint:`http://127.0.0.1:${server.address().port}/v1`,model:'test',apiKey:'test-key'});
+  let dispatched=false;const originalDispatch=Agent.prototype.dispatch;
+  t.mock.method(Agent.prototype,'dispatch',function(options,handler){dispatched=true;assert.equal(options.headersTimeout,1200000);assert.equal(options.bodyTimeout,1200000);return originalDispatch.call(this,options,handler);});
   const history=[{role:'user',content:'保留页面结构'},{role:'assistant',content:'已确认写入：保留页面结构'}];
   const proposal=await service.generate(project,{request:'把标题改成 Updated',history});
+  assert.equal(dispatched,true,'generation transport uses the full twenty-minute deadline');
   const task=JSON.parse(requestBody.messages[1].content);
   assert.equal(task.request,'把标题改成 Updated');assert.deepEqual(task.history,history);assert.deepEqual(task.requirements,{});
   for(const rule of ['静态 HTML','data-ve-node','数组下标','独立元素','innerHTML','演示数据','!important','相对路径','第三方库','重复 ID','普通本地 HTTP'])assert.ok(requestBody.messages[0].content.includes(rule),rule);
@@ -151,4 +155,19 @@ test('AI sends screenshots as multimodal images with selected source context and
   await assert.rejects(service.generate(project,{request:'修改',images:[{name:'fake',url:'data:image/png;base64,YWJj'}]}),/图片|截图/);
   await assert.rejects(service.generate(project,{request:'修改',selection:{kind:'elements',elements:[{selector:'#title',html:original.repeat(1000)}]}}),/选区|区域/);
  }finally{await new Promise(r=>model.close(r));await rm(root,{recursive:true,force:true});}
+});
+
+test('generation allows twenty minutes and explains timeout without changing source',async(t)=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-timeout-')),editor=join(root,'editor');
+ const project={root,entry:'index.html',editsFile:join(root,'.visual-editor','page','visual-edits.json'),backupDir:join(root,'.visual-editor','page','backups')};
+ const original='<h1 id="heading">Original</h1>';let deadline;
+ try {
+  await writeFile(join(root,'index.html'),original);
+  const service=createAIService(editor);await service.settings({endpoint:'http://127.0.0.1:9/v1',model:'test',apiKey:'test-only-key'});
+  t.mock.method(AbortSignal,'timeout',ms=>{deadline=ms;return AbortSignal.abort(new DOMException('The operation was aborted due to timeout','TimeoutError'));});
+  await assert.rejects(service.generate(project,{request:'新增一个 tab'}),error=>{
+   assert.equal(deadline,1200000);assert.equal(error.statusCode,504);assert.match(error.message,/模型.*超时/);assert.match(error.message,/20 分钟/);assert.match(error.message,/未.*保存/);return true;
+  });
+  assert.equal(await readFile(join(root,'index.html'),'utf8'),original);
+ } finally {await rm(root,{recursive:true,force:true});}
 });

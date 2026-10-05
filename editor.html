@@ -27,7 +27,7 @@
         <button id="redo-button" type="button" title="重做 (⌘/Ctrl+Shift+Z)">↷ 重做</button>
         <button id="reload-button" type="button" title="重新读取当前 HTML 与本地资源">刷新代码</button>
         <button id="editor-changes-toggle" type="button" aria-pressed="false" title="显示或隐藏手动框选的标记">显示手动标记</button>
-        <button id="editor-box-toggle" type="button" aria-pressed="false" title="在当前画布拖动框选并保存手动改动点">框选改动</button>
+        <button id="editor-box-toggle" type="button" aria-pressed="false" title="在当前画布拖动框选并保存手动改动点">框选标记</button>
         <button id="ai-button" type="button">AI 待办</button>
         <button id="save-button" class="primary" type="button" title="写入项目中的本地 HTML 文件（⌘/Ctrl+S），未完成的 AI 待办不算源码已保存">保存到项目</button>
         <button id="view-first-button" type="button">查看初版</button>
@@ -39,7 +39,7 @@
           <button id="share-lan-button" type="button">局域网分享</button>
           <button id="export-html-button" type="button">导出可运行 HTML</button>
           <button id="import-button" type="button" hidden>导入调整 JSON</button>
-          <button id="reset-button" class="danger" type="button">清空全部调整</button>
+          <button id="reset-button" class="danger" type="button">恢复初版</button>
         </div>
         <input id="import-file" type="file" accept="application/json,.json" hidden />
       </div>
@@ -56,6 +56,7 @@
     <div id="saveability-summary" role="status" aria-live="polite">正在检查页面的保存方式…</div>
     <main class="editor-main">
       <aside class="editor-help" aria-label="图层与组件">
+        <button id="sidebar-toggle" type="button" aria-expanded="false" aria-label="展开左侧面板" title="展开左侧面板"><span aria-hidden="true">›</span><span class="sidebar-toggle-label">展开</span></button>
         <nav class="sidebar-navigation" aria-label="编辑工具"><button id="layers-toggle" class="editor-help-toggle" type="button" aria-expanded="false" title="展开图层与组件"><span class="help-toggle-icon">▤</span><span class="help-toggle-label">图层与组件</span><span class="help-toggle-arrow">›</span></button><button id="ai-chat-button" class="editor-help-toggle" type="button" title="AI 对话：用自然语言修改界面" aria-expanded="false" aria-controls="ai-dialog"><span class="help-toggle-icon" aria-hidden="true">✦</span><span class="help-toggle-label">AI 对话</span><span class="help-toggle-arrow" aria-hidden="true">›</span></button><button id="editor-help-toggle" class="editor-help-toggle" type="button" aria-expanded="false" aria-controls="editor-help-content" title="展开使用说明">
           <span class="help-toggle-icon" aria-hidden="true">?</span>
           <span class="help-toggle-label">使用说明</span>
@@ -65,7 +66,22 @@
         <div id="structure-panel" hidden>
           <div class="structure-tabs"><button type="button" data-structure-tab="layers" class="active">图层</button><button type="button" data-structure-tab="insert">新增组件</button></div>
           <section id="layers-panel"><input id="layer-search" type="search" placeholder="搜索文字、图层或 ID" aria-label="搜索图层" /><p class="structure-hint">点击选择；拖动图层到容器可移入。隐藏的元素也可在这里找到。</p><div id="layer-tree" aria-label="页面图层"></div></section>
-          <section id="insert-panel" hidden><p class="structure-hint">将组件拖到画布里的目标位置，松手添加。绿色边框显示放入的容器，不挤动现有内容；也可选中容器后点击添加。图片请点击选择本地文件。</p><div class="component-palette"><button data-insert="card">▣ 指标卡片</button><button data-insert="container">▤ 空白容器</button><button data-insert="heading">T 标题</button><button data-insert="text">¶ 文字</button><button data-insert="button">▭ 按钮</button><button data-insert="divider">― 分隔线</button><button data-insert="circle">○ 圆形</button><button data-insert="rectangle">▭ 矩形</button><button data-insert="image">▧ 图片</button></div></section>
+          <section id="insert-panel" hidden><p class="structure-hint">将组件拖到画布里的目标位置，松手添加。绿色边框显示放入的容器，不挤动现有内容；也可选中容器后点击添加。图片请点击选择本地文件。</p><div class="component-palette">
+<button type="button" data-insert="card"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 8h5M7 16l3-4 3 2 4-5"/></svg></span><span>指标卡片</span></button>
+<button type="button" data-insert="container"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" stroke-dasharray="3 3"/><path d="M9 12h6M12 9v6"/></svg></span><span>空白容器</span></button>
+<button type="button" data-insert="heading"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h14M12 5v14M8 19h8"/></svg></span><span>标题</span></button>
+<button type="button" data-insert="text"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 10h16M4 14h12M4 18h8"/></svg></span><span>文字</span></button>
+<button type="button" data-insert="button"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="4"/><path d="M8 12h8"/></svg></span><span>按钮</span></button>
+<button type="button" data-insert="select"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 12h4m4-1 2 2 2-2"/></svg></span><span>下拉框</span></button>
+<button type="button" data-insert="input"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 12h5m3-4v8m-2-8h4m-4 8h4"/></svg></span><span>输入框</span></button>
+<button type="button" data-insert="divider"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M5 7v1M5 16v1M19 7v1M19 16v1"/></svg></span><span>分隔线</span></button>
+<button type="button" data-insert="circle"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/></svg></span><span>圆形</span></button>
+<button type="button" data-insert="rectangle"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/></svg></span><span>矩形</span></button>
+<button type="button" data-insert="image"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m4 18 5-5 3 3 4-6 5 8"/></svg></span><span>图片</span></button>
+<button type="button" data-insert="bar"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="6" y="12" width="3" height="5" rx=".5"/><rect x="12" y="8" width="3" height="9" rx=".5"/><rect x="18" y="4" width="3" height="13" rx=".5"/></svg></span><span>柱状图</span></button>
+<button type="button" data-insert="line"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18M6 15l5-5 4 3 6-8"/><circle cx="11" cy="10" r="1"/><circle cx="15" cy="13" r="1"/></svg></span><span>折线图</span></button>
+<button type="button" data-insert="donut"><span class="component-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9h-5a4 4 0 1 1-4-4V3Z"/><path d="M15 3.5V9h5.5A9 9 0 0 0 15 3.5Z"/></svg></span><span>圆环占比图</span></button>
+</div></section>
         </div>
 
 
@@ -117,9 +133,16 @@
       <div class="ai-heading"><span class="ai-symbol" aria-hidden="true">✦</span><div><h2 id="ai-title">AI 修改</h2><p>描述需求，直接修改并保存源码</p></div></div>
       <button id="ai-close" class="ai-icon-button" type="button" aria-label="关闭 AI 侧栏">×</button>
     </header>
+    <div id="ai-run-state" class="ai-run-state" hidden data-state="idle">
+      <div class="ai-run-line"><span id="ai-run-icon" class="ai-run-icon" aria-hidden="true"></span><strong id="ai-run-title"></strong><span id="ai-run-elapsed" aria-hidden="true"></span></div>
+      <p id="ai-run-detail" role="status" aria-live="polite"></p>
+      <button id="ai-stop" type="button" hidden>停止 AI 修改</button>
+      <ol class="ai-run-steps" aria-label="AI 修改流程"><li data-phase="generate"><span class="ai-run-segment" aria-hidden="true"></span><span class="ai-run-step-label">生成修改</span></li><li data-phase="verify"><span class="ai-run-segment" aria-hidden="true"></span><span class="ai-run-step-label">检查效果</span></li><li data-phase="save"><span class="ai-run-segment" aria-hidden="true"></span><span class="ai-run-step-label">保存源码</span></li></ol>
+    </div>
     <div class="ai-body">
       <div class="ai-overview"><span aria-hidden="true">✓</span><p>普通修改先保存，AI 按你的要求修改最新源码。<br><small>AI 自动检查、备份并保存，完成后刷新主界面。</small></p></div>
       <section class="ai-chat-panel" aria-label="对话修改界面">
+        <details id="ai-process" class="ai-process" hidden><summary>实时处理过程 <span id="ai-stream-received"></span></summary><div class="ai-process-content"><p id="ai-live-summary"></p><ol id="ai-process-log"></ol></div></details>
         <label class="ai-chat-label" for="ai-chat-input">想修改哪里？</label>
         <textarea id="ai-chat-input" rows="5" maxlength="12000" placeholder="例如：把顶部指标卡改成两列，金额字号加大。
 
@@ -197,8 +220,8 @@
           <iframe id="prototype-frame" src="about:blank" title="当前 HTML 页面"></iframe>
         </div></div></div>
         <svg id="annotation-connectors" class="annotation-connectors" aria-hidden="true"></svg>
-        <aside id="annotation-rail" class="annotation-rail" hidden aria-label="改动说明">
-          <div class="annotation-rail-head"><div><strong>改动说明</strong><span>框选标记与右侧说明对应</span></div><span id="annotation-count"></span></div>
+        <aside id="annotation-rail" class="annotation-rail" hidden aria-label="逻辑说明">
+          <div class="annotation-rail-head"><div><strong>逻辑说明</strong><span>框选标记与右侧说明对应</span></div><span id="annotation-count"></span></div>
           <div id="annotation-list" class="annotation-list"></div>
         </aside>
       </section>
@@ -303,7 +326,7 @@
             <div class="move-arrows"><span></span><button type="button" data-nudge="up" aria-label="向上微调">↑</button><span></span><button type="button" data-nudge="left" aria-label="向左微调">←</button><button id="reset-offset" type="button" title="归零所选元素偏移" aria-label="偏移归零">·</button><button type="button" data-nudge="right" aria-label="向右微调">→</button><span></span><button type="button" data-nudge="down" aria-label="向下微调">↓</button><span></span></div>
             <div id="movement-offset"></div>
             <div class="quick-actions"><button id="place-on-page" type="button">放到页面自由摆放</button></div>
-            <p class="field-hint">直接拖动可跨容器，绿色边框表示放入位置；按住 ⌘ / Ctrl 拖动可放在页面上自由摆放。蓝色线辅助对齐，Alt 取消吸附。长按左键滑过组件连续多选，松开后直接拖动整组；Shift 追加选择。方向键移动 1px，Shift + 方向键移动 10px。换位仅限同级元素。Esc 取消拖动。</p>
+            <p class="field-hint">直接拖动可跨容器，绿色边框表示放入位置；按住 ⌘ / Ctrl 拖动可放在页面上自由摆放。蓝色线辅助对齐，Alt 取消吸附。长按左键滑过组件连续多选，松开后直接拖动整组；Shift 追加选择。方向键移动 1px，Shift + 方向键移动 10px。换位时，虚线框表示可交换目标；拖到目标上，看到“松手交换”后松开。只可交换同一容器里的组件。Esc 取消拖动。</p>
           </section>
 
 
@@ -352,7 +375,7 @@
     <div class="project-dialog-head"><div><h2 id="share-title">局域网分享</h2><p>把链接发给同一 Wi-Fi 或局域网的同事，即可浏览页面。</p></div><button id="share-close" type="button" aria-label="关闭分享窗口">×</button></div>
     <label for="share-link">分享链接</label><select id="share-link" aria-label="选择局域网分享地址" hidden></select>
     <p id="share-status" role="status">正在保存并生成分享链接…</p>
-    <p class="project-note">分享的是本次保存后的页面及本地资源。修改后重新点击“局域网分享”即可更新原链接。请保持这台电脑和编辑器服务运行；“停止分享”后链接立即失效。</p>
+    <p class="project-note">分享链接长期保留，服务重启后自动恢复；保存到项目后自动同步页面及本地资源。访问时请保持电脑和服务运行，并连接同一局域网；“停止分享”后链接立即失效。</p>
     <div class="share-actions"><button id="share-stop" class="danger" type="button" disabled>停止分享</button><button id="share-copy" class="primary" type="button" disabled>复制链接</button></div>
   </dialog>
   <dialog id="project-dialog" aria-labelledby="project-dialog-title">

@@ -26,6 +26,11 @@ test('column span adjustments persist but arbitrary HTML attributes are rejected
   assert.throws(()=>validateVisualEdits({version:1,patches:{bad:{selector:'#bad',attributes:{onclick:'alert(1)'}}}}),/属性/);
 });
 
+test('input value attributes can be saved without permitting executable attributes', () => {
+  assert.doesNotThrow(()=>validateVisualEdits({version:1,patches:{input:{selector:'#input',attributes:{value:'输入内容',placeholder:'请输入客户名称'}}}}));
+  assert.throws(()=>validateVisualEdits({version:1,patches:{input:{selector:'#input',attributes:{oninput:'alert(1)'}}}}),/属性/);
+});
+
 test('writeVisualEdits backs up the previous file and atomically stores JSON', async () => {
   const root = await mkdtemp(join(tmpdir(), 'visual-edits-'));
   const filePath = join(root, 'visual-edits.json');

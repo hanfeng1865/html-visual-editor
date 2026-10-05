@@ -143,7 +143,10 @@ export function createVisualPatchEngine(doc) {
         const src = doc.defaultView?.__visualEditorAssets?.[patch.image] || `assets/${patch.image}`;
         if (element.getAttribute('src') !== src) element.setAttribute('src', src);
       }
-      for (const [name, value] of Object.entries(patch.attributes || {})) element.setAttribute(name, value);
+      for (const [name, value] of Object.entries(patch.attributes || {})) {
+        element.setAttribute(name, value);
+        if(name==='value' && element.tagName==='INPUT' && element.value!==value)element.value=value;
+      }
       for (const [property, value] of Object.entries(patch.styles || {})) {
         if (element.style[property] !== value) element.style[property] = value;
       }

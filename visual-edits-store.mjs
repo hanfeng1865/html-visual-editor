@@ -31,7 +31,7 @@ export function validateVisualEdits(value) {
     if ('text' in patch && typeof patch.text !== 'string') throw new Error(`补丁 ${key} 的 text 必须是字符串`);
     if ('deleted' in patch && patch.deleted !== true) throw new Error(`补丁 ${key} 的 deleted 只能为 true`);
     if ('textNodes' in patch && (!plainObject(patch.textNodes) || !Object.entries(patch.textNodes).every(([index,text]) => /^(0|[1-9]\d*)$/.test(index) && typeof text === 'string'))) throw new Error('文字片段格式无效');
-    if ('attributes' in patch && (!plainObject(patch.attributes) || !Object.entries(patch.attributes).every(([name,value]) => name === 'colspan' && typeof value === 'string' && /^[1-9]\d*$/.test(value) && Number(value) <= 1000))) throw new Error('表格属性格式无效');
+    if ('attributes' in patch && (!plainObject(patch.attributes) || !Object.entries(patch.attributes).every(([name,value]) => typeof value === 'string' && (['value','placeholder'].includes(name) || name === 'colspan' && /^[1-9]\d*$/.test(value) && Number(value) <= 1000)))) throw new Error('组件属性格式无效');
     if ('icon' in patch && (typeof patch.icon !== 'string' || !/^[a-z][a-z0-9-]*$/.test(patch.icon))) throw new Error('图标格式无效');
     if ('image' in patch && !['collection.png','customers.png','dashboard.png','declared.png','details.png','ordered.png','pending.png','profit.png','receivable.png','retained.png'].includes(patch.image)) throw new Error('仅支持项目内的图标');
     if ('styles' in patch) {

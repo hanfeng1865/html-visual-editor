@@ -6,13 +6,24 @@ import {tmpdir} from 'node:os';import {join} from 'node:path';import assert from
 const temp=await mkdtemp(join(tmpdir(),'ai-chat-ui-')),project=join(temp,'project'),editorDir=join(temp,'editor');await mkdir(project);
 await cp(new URL('../',import.meta.url),editorDir,{recursive:true,filter:path=>!['.git','node_modules','.editor-workspaces','editor-config.json'].includes(path.split(/[\\/]/).pop())});
 await writeFile(join(project,'index.html'),'<!doctype html><html><head><style>body{padding:40px}h1{margin:0}</style></head><body><h1 id="title">Original</h1><p id="number">128</p></body></html>');
-let mode='good',tasks=[],instructions=[];
+let mode='good',tasks=[],instructions=[],modelGate=null,releaseModel=null,resolveDisconnect=null;
 const model=createServer(async(req,res)=>{
  if(req.url==='/v1/models'){res.setHeader('content-type','application/json');return res.end(JSON.stringify({data:[{id:'test'}]}));}
  let body='';for await(const chunk of req)body+=chunk;const envelope=JSON.parse(body),content=envelope.messages[1].content,task=JSON.parse(Array.isArray(content)?content[0].text:content);task.receivedImageCount=Array.isArray(content)?content.filter(part=>part.type==='image_url').length:0;tasks.push(task);instructions.push(envelope.messages[0].content);
+ res.on('close',()=>{if(!res.writableEnded)resolveDisconnect?.();});
+ if(modelGate && mode!=='stream')await modelGate;
  if(mode==='fail'){res.writeHead(503);return res.end();}
  const before=task.files['index.html'];let after=before.replace(/(<h1 id="title"[^>]*>)[\s\S]*?<\/h1>/,'$1'+(task.request.includes('two')?'AI two':'AI one')+'</h1>');
  if(mode==='duplicate')after=after.replace('</body>','<p id="title">Duplicate</p></body>');
+ if(mode==='stream'){
+  after=after.replace(/AI one/g,'AI streamed');
+  res.setHeader('content-type','text/event-stream');
+  const output=JSON.stringify({summary:'先保留页面结构，再更新标题，最后检查页面是否正常。',edits:[{path:'index.html',before,after}],explanation:'按要求修改标题并保留可编辑结构'});
+  const cut=24;
+  res.write('data: '+JSON.stringify({choices:[{delta:{content:output.slice(0,cut)}}]})+'\n\n');
+  if(modelGate)await modelGate;
+  res.write('data: '+JSON.stringify({choices:[{delta:{content:output.slice(cut)},finish_reason:'stop'}]})+'\n\n');res.end('data: [DONE]\n\n');return;
+ }
  res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({edits:[{path:'index.html',before,after}],explanation:'按要求修改标题并保留可编辑结构'})}}]}));
 });
 await new Promise(r=>model.listen(0,'127.0.0.1',r));
@@ -65,13 +76,42 @@ try {
  await page.locator('#ai-image-file').setInputFiles({name:'高清截图.png',mimeType:'image/png',buffer:Buffer.from(large,'base64')});await page.waitForFunction(()=>document.querySelectorAll('#ai-images img').length===3);assert.match(await page.locator('#ai-images img').last().getAttribute('src'),/^data:image\/jpeg/);
  await page.locator('#ai-image-file').setInputFiles({name:'第四张.png',mimeType:'image/png',buffer:Buffer.from(pixel,'base64')});await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('最多'));assert.equal(await page.locator('#ai-images img').count(),3);
 
+ modelGate=new Promise(resolve=>{releaseModel=resolve;});
  await page.locator('#ai-chat-input').fill('把标题改成 AI one');await page.locator('#ai-chat-send').click();
+ await page.locator('#ai-run-state[data-state="running"][data-phase="generate"]').waitFor({timeout:3000});
+ assert.equal(await page.locator('.ai-run-segment').count(),3,'progress uses three aligned segments');
+ async function checkProgressAlignment(){
+   const bounds=await page.locator('.ai-run-steps li').evaluateAll(items=>items.map(el=>{const r=el.getBoundingClientRect(),bar=el.querySelector('.ai-run-segment').getBoundingClientRect(),label=el.querySelector('.ai-run-step-label').getBoundingClientRect();return {width:r.width,top:r.top,barTop:bar.top,labelTop:label.top};}));
+   assert.ok(bounds.every(b=>Math.abs(b.width-bounds[0].width)<1 && Math.abs(b.top-bounds[0].top)<1 && Math.abs(b.barTop-bounds[0].barTop)<1 && Math.abs(b.labelTop-bounds[0].labelTop)<1),'bars and labels align in equal columns');
+ }
+ await checkProgressAlignment();
+ assert.match(await page.locator('#ai-run-title').textContent(),/AI 修改中/);
+ assert.match(await page.locator('#ai-run-detail').textContent(),/模型/);
+ assert.match(await page.locator('#ai-chat-send').textContent(),/修改中/);
+ assert.equal(await page.locator('#ai-chat-send').isDisabled(),true);
+ await page.waitForFunction(()=>document.querySelector('#ai-run-elapsed').textContent.includes('1 秒'));
+ await page.locator('#ai-chat-input').press('ControlOrMeta+Enter');assert.equal(tasks.length,1,'busy state prevents duplicate requests');
+ const indicator=await page.locator('#ai-run-state').boundingBox();
+ assert.ok(indicator.y>=0 && indicator.y+indicator.height<500,'progress stays above the scrolling conversation');
+ await page.screenshot({path:'/tmp/html-editor-ai-running.png',clip:{x:indicator.x-6,y:indicator.y-50,width:indicator.width+12,height:indicator.height+100}});
+ releaseModel();modelGate=null;
+ await page.locator('#ai-run-state[data-phase="verify"]').waitFor();
  await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('已修改并保存'),{},{timeout:5000});
+ assert.equal(await page.locator('#ai-run-state').getAttribute('data-state'),'success');
+ assert.match(await page.locator('#ai-run-title').textContent(),/已保存/);
+ assert.equal(await page.locator('.ai-run-steps .is-done').count(),3);
+ await checkProgressAlignment();
+ for(const width of [1000,1500]){await page.setViewportSize({width,height:1000});await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));await checkProgressAlignment();}
+ const completed=await page.locator('#ai-run-state').boundingBox();
+ await page.screenshot({path:'/tmp/html-editor-ai-progress.png',clip:{x:completed.x-4,y:completed.y-4,width:completed.width+8,height:completed.height+8}});
+
+ assert.equal(await page.locator('#ai-chat-send').textContent(),'发送并修改 ↑');
  assert.match(tasks[0].files['index.html'],/Saved draft/);assert.equal(tasks.length,1);assert.equal(tasks[0].request,'把标题改成 AI one');assert.equal(tasks[0].receivedImageCount,3);assert.equal(tasks[0].selection.elements[0].selector,'#number');
  assert.match(await readFile(join(project,'index.html'),'utf8'),/AI one/);await f.locator('#title').filter({hasText:'AI one'}).waitFor();
  assert.equal(await page.locator('#ai-dialog').evaluate(el=>el.open),true,'侧栏保持打开');assert.equal(await page.locator('#ai-apply').count(),0,'无需再次确认');assert.equal(await page.locator('#ai-images img').count(),0);assert.equal(await page.locator('#ai-chat-input').inputValue(),'');
  assert.equal(await page.locator('#ai-chat-log').isVisible(),false,'完成后历史默认收起');
  await page.locator('#ai-chat-history summary').click();assert.equal(await page.locator('#ai-chat-log').isVisible(),true,'可按需展开历史');
+ const firstDuration=await page.locator('.ai-chat-message.assistant .ai-chat-duration').first().textContent({timeout:2000});assert.match(firstDuration,/^用时 \d+ 秒$/);
  await page.locator('#ai-chat-input').fill('接着改成 AI two');await page.locator('#ai-chat-input').press('ControlOrMeta+Enter');
  await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('已修改并保存') && !document.querySelector('#ai-chat-input').disabled && document.querySelector('#ai-chat-input').value==='',{},{timeout:5000});
  assert.ok(tasks.at(-1).history.some(item=>item.role==='assistant' && item.content.includes('已写入')));
@@ -88,9 +128,48 @@ try {
  await page.locator('#ai-close').click();
  mode='duplicate';await page.locator('#ai-chat-button').click();await page.locator('#ai-chat-input').fill('新增重复标题');await page.locator('#ai-chat-send').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('重复 ID'));assert.match(await readFile(join(project,'index.html'),'utf8'),/AI two/);
  mode='fail';await page.locator('#ai-image-file').setInputFiles({name:'失败保留.png',mimeType:'image/png',buffer:Buffer.from(pixel,'base64')});await page.waitForFunction(()=>document.querySelectorAll('#ai-images img').length===1);await page.locator('#ai-chat-input').fill('保留这条失败的请求');await page.locator('#ai-chat-send').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('503'));
+ assert.equal(await page.locator('#ai-run-state').getAttribute('data-state'),'error');assert.match(await page.locator('#ai-run-title').textContent(),/失败/);
  assert.equal(await page.locator('#ai-chat-input').inputValue(),'保留这条失败的请求');assert.equal(await page.locator('#ai-chat-send').isEnabled(),true);assert.equal(await page.locator('#ai-images img').count(),1,'失败保留截图');
  await page.reload();await f.locator('#title').waitFor();await page.locator('#ai-chat-button').click();assert.equal(await page.locator('#ai-chat-input').inputValue(),'保留这条失败的请求');assert.match(await page.locator('#ai-chat-log').textContent(),/已写入/);
  assert.equal(await page.locator('#ai-chat-log').isVisible(),false,'刷新后历史仍默认收起');
+ assert.equal(await page.locator('.ai-chat-duration').count(),2,'successful requests retain their own timings after reload');assert.equal(await page.locator('.ai-chat-duration').last().textContent(),firstDuration);
  assert.match(await readFile(join(project,'index.html'),'utf8'),/AI two/);
+ await page.locator('#ai-image-file').setInputFiles({name:'停止保留.png',mimeType:'image/png',buffer:Buffer.from(pixel,'base64')});await page.waitForFunction(()=>document.querySelectorAll('#ai-images img').length===1);
+ const beforeStop=await readFile(join(project,'index.html'),'utf8');
+ mode='good';modelGate=new Promise(resolve=>{releaseModel=resolve;});
+ const disconnected=new Promise(resolve=>{resolveDisconnect=resolve;});
+ await page.locator('#ai-chat-input').fill('取消这一轮任务');await page.locator('#ai-chat-send').click();
+ await page.locator('#ai-run-state[data-phase="generate"][data-state="running"]').waitFor();
+ await page.locator('#ai-stop').click({timeout:1000});
+ await page.locator('#ai-run-state[data-state="stopped"]').waitFor({timeout:2000});
+ assert.match(await page.locator('#ai-run-title').textContent(),/已停止/);
+ assert.equal(await page.locator('#ai-chat-input').inputValue(),'取消这一轮任务');
+ assert.equal(await page.locator('#ai-chat-send').isEnabled(),true);
+ assert.equal(await page.locator('#ai-images img').count(),1);
+ assert.equal(await readFile(join(project,'index.html'),'utf8'),beforeStop);
+ assert.equal(await Promise.race([disconnected.then(()=>true),new Promise(r=>setTimeout(()=>r(false),2000))]),true,'stop also disconnects the upstream model request');
+ releaseModel();modelGate=null;resolveDisconnect=null;
+ await page.locator('#ai-chat-send').click();await page.locator('#ai-run-state[data-phase="verify"][data-state="running"]').waitFor();
+ await page.locator('#ai-stop').click({timeout:1000});await page.locator('#ai-run-state[data-state="stopped"]').waitFor({timeout:2000});
+ assert.equal(await readFile(join(project,'index.html'),'utf8'),beforeStop,'stopping verification prevents apply');
+ mode='good';
+ await page.route('**/api/ai/generate?**',async route=>{
+   const request=route.request(),body=request.postDataJSON();delete body.stream;
+   const response=await route.fetch({postData:JSON.stringify(body)});
+   await route.fulfill({response});
+ });
+ await page.locator('#ai-chat-input').fill('兼容旧服务的普通响应');await page.locator('#ai-chat-send').click();
+ await page.locator('#ai-run-state[data-state="success"]').waitFor({timeout:5000});
+ await page.unroute('**/api/ai/generate?**');
+ const beforeStream=await readFile(join(project,'index.html'),'utf8');
+ mode='stream';modelGate=new Promise(resolve=>{releaseModel=resolve;});
+ await page.locator('#ai-chat-input').fill('流式修改标题');await page.locator('#ai-chat-send').click();
+ await page.waitForFunction(()=>document.querySelector('#ai-live-summary')?.textContent.includes('先保留页面结构'),{},{timeout:2000});
+ assert.equal(await readFile(join(project,'index.html'),'utf8'),beforeStream,'summary arrives before the model finishes and before saving');
+ assert.equal(await page.locator('#ai-process').evaluate(el=>el.open),true,'process expands during generation');
+ releaseModel();modelGate=null;
+ await page.locator('#ai-run-state[data-state="success"]').waitFor();
+ assert.match(await page.locator('#ai-live-summary').textContent(),/最后检查页面是否正常/);
+ assert.match(await page.locator('#ai-process-log').textContent(),/检查.*保存/s);
  console.log('PASS: selection/region context, screenshot upload/paste/compression/limits, multimodal transmission and failure retention; chat saves drafts first, sends compatibility rules, automatically checks and saves changes, supports follow-up/collapsed history/reload, blocks duplicate IDs and preserves failed input');
-}finally{await browser.close();await new Promise(r=>server.close(r));await new Promise(r=>model.close(r));await rm(temp,{recursive:true,force:true});}
+}finally{releaseModel?.();await browser.close();await new Promise(r=>server.close(r));await new Promise(r=>model.close(r));await rm(temp,{recursive:true,force:true});}

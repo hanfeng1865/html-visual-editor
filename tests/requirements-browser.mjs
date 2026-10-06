@@ -1,0 +1,204 @@
+import {chromium} from 'playwright';
+import {createServer} from 'node:http';
+import {mkdtemp,mkdir,cp,writeFile,readFile,rm} from 'node:fs/promises';
+import {join,resolve} from 'node:path';
+import {tmpdir} from 'node:os';
+import assert from 'node:assert/strict';
+import {createDevServer} from '../dev-server.mjs';
+
+const temp=await mkdtemp(join(tmpdir(),'requirements-browser-')),editor=join(temp,'editor'),root=join(temp,'project');
+await mkdir(root);await cp(new URL('../',import.meta.url),editor,{recursive:true,filter:path=>!['.git','node_modules','.editor-workspaces','editor-config.json','output','.visual-editor'].includes(path.split(/[\\/]/).pop())});
+await writeFile(join(root,'index.html'),'<!doctype html><html><head><title>应收</title></head><body><h1 id="title">经营总览</h1><button id="export">导出报表</button></body></html>');
+await writeFile(join(root,'detail.html'),'<html><head></head><body>应收明细</body></html>');
+let discussions=0,mode='good';
+const model=createServer(async(req,res)=>{let input='';for await(const chunk of req)input+=chunk;const data=JSON.parse(input),content=data.messages[1].content,task=JSON.parse(Array.isArray(content)?content[0].text:content);let output;
+ if(data.messages[0].content.includes('你是产品经理')){discussions++;output={reply:'本次迭代的导出范围是什么？',document:'# 应收查询优化\n\n## 1. Why\n待确认：业务目标。\n\n## 6. How\n### 6.1 报表导出\n仅导出筛选结果。\n\n## 7. 验收标准\n1. 导出记录与筛选结果一致。',questions:['数据权限如何控制？'],suggestions:(task.message||'').includes('确认')?[{title:'明确导出按钮文案',reason:'用户已明确导出范围',request:'将导出报表改为导出筛选结果',entry:'index.html'}]:[]};}
+ else output={edits:[{path:'index.html',before:'导出报表',after:'导出筛选结果'}],explanation:'已明确导出范围'};
+ if(data.messages[0].content.includes('需求访谈'))output={questions:Array.from({length:task.count},(_,i)=>({text:['本轮主要目标是什么？','哪些角色需要使用？','本轮预算是多少？'][i]||'需要确认的事项 '+i,options:Array.from({length:task.optionCount},(_,j)=>'可选方案 '+(j+1)),hint:'这会影响本轮范围与验收。'}))};
+ if(discussions===1&&output.document)output.questions=['数据权限如何控制？',...Array.from({length:11},(_,i)=>`需要补充的业务规则 ${i+2}？`)];
+ if(task.documentReview&&output.document){output.document=task.document+'\n\n绩效来源：CRM。';output.reply='仅补充CRM来源，保留原有规则。';}
+ if(output.document)output.conflicts=[{title:'绩效正式来源冲突',statements:[{source:'历史需求',text:'Excel作为正式绩效来源'},{source:'当前回答',text:'绩效来自CRM'}],impact:'需要解释Excel入口与CRM数据的关系'}];
+ if(output.document&&task.message?.includes('用户已解释以下逻辑冲突'))output.document+='\n\nExcel导入CRM，驾驶舱读取CRM正式绩效。';
+ if(output.document)output.document+='\n\n| 使用者 | 主要职责 | 建议数据范围及操作权限 |\n| --- | --- | --- |\n| 财务人员 | 核对应收、回款、付款及票税 | 查看授权范围内财务数据；记录、核对及导出 |';
+ if(process.env.REQUIREMENTS_SCREENSHOTS&&output.document){
+  output.reply='我已查看原型，当前范围包含经营总览与应收明细。页面中的数据和计算暂作为演示参考，业务规则需要进一步确认。\n\n先确认一个关键问题：本次导出需要包含全部数据，还是仅包含当前筛选结果？';
+  output.questions=['导出范围是全部数据，还是当前筛选结果？','主要使用者有哪些，不同角色的查看权限如何划分？','导出文件需要哪些字段，金额和日期使用什么格式？','空数据、异常数据分别如何展示？','是否需要记录导出操作日志？','一次最多导出多少条记录？','本轮预计什么时候交付，如何验收？','经营总览与明细的统计口径如何保持一致？','已有系统提供哪些数据接口？','本轮明确不包含哪些功能？'];
+ }
+ if(mode==='fail'){res.writeHead(503);return res.end();}res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(output)},finish_reason:'stop'}]}));
+});
+await new Promise(r=>model.listen(0,'127.0.0.1',r));
+const server=createDevServer({rootDir:root,editorDir:editor});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+const base=`http://127.0.0.1:${server.address().port}`;const api=async(path,body)=>{const res=await fetch(base+path,body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{});const data=await res.json();assert.ok(res.ok,JSON.stringify(data));return data;};
+const browser=await chromium.launch({headless:true});
+try{
+ await api('/api/ai/settings',{endpoint:`http://127.0.0.1:${model.address().port}/v1`,model:'test',apiKey:'test-only'});
+ const project=await api('/api/projects/open',{path:root});
+ const page=await browser.newPage({viewport:{width:1500,height:1000}});
+ const acceptPreview=async()=>{await page.waitForFunction(()=>!document.querySelector('[data-action="close"]').disabled);const buttons=page.locator('[data-review-kind="accept"]');if(await buttons.count())await buttons.last().click();await page.waitForFunction(()=>!document.querySelector('[data-action="close"]').disabled);};const errors=[];let analysisRequests=0;page.on('request',request=>{if(new URL(request.url()).pathname==='/api/requirements/chat')analysisRequests++;});page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(`${base}/editor/editor.html?project=${project.id}&entry=index.html`);await page.waitForFunction(()=>document.querySelector('#page-select').value==='index.html');
+ await page.click('#requirements-button');await page.click('[data-action="refresh"]');await page.click('[data-action="new"]');
+ let releaseAnalysis,analysisRequested;
+ const analysisGate=new Promise(resolve=>{releaseAnalysis=resolve;}),analysisStarted=new Promise(resolve=>{analysisRequested=resolve;});
+ await page.route('**/api/requirements/chat?*',async route=>{analysisRequested();await analysisGate;await route.continue();},{times:1});
+ await page.fill('#req-create [name="name"]','应收查询优化');await page.click('#req-create button[name="start"]');
+ try{
+  await analysisStarted;
+  assert.equal(await page.locator('#req-create').count(),0,'creation form closes before the AI response arrives');
+  assert.equal(await page.locator('.req-iteration-heading small').textContent(),'进行中','started iteration is visible while AI is working');
+  assert.match(await page.locator('.req-local-progress').textContent(),/正在.*分析/,'current progress replaces the stale refresh notice');
+  assert.equal(await page.locator('#req-chat button[type="submit"]').isDisabled(),true);
+  assert.equal(await page.locator('#req-chat textarea').isEnabled(),true);
+  await page.fill('#req-chat textarea','处理期间写下的下一条输入');
+  if(process.env.REQUIREMENTS_SCREENSHOTS){await mkdir(resolve(process.env.REQUIREMENTS_SCREENSHOTS),{recursive:true});await page.locator('.req-workspace').screenshot({path:resolve(process.env.REQUIREMENTS_SCREENSHOTS,'workspace-analyzing.png')});}
+ }finally{releaseAnalysis();}
+ await page.locator('[data-review-kind="accept"]').waitFor();assert.equal(await page.locator('.req-document').count(),0,'initial AI document is shown as a candidate');assert.ok(await page.locator('.req-review-related').count(),'review exposes pending question changes as well as document changes');await acceptPreview();
+ await page.waitForFunction(()=>document.querySelector('.req-iteration-heading small')?.textContent==='进行中'&&document.querySelector('.req-document')?.textContent.includes('应收查询优化'));
+ await page.waitForFunction(()=>!document.querySelector('[data-action="close"]').disabled);
+ assert.match(await page.locator('.req-quiz-progress').textContent(),/第 1 \/.*题/,'start automatically asks the first pending question');
+ assert.equal(await page.locator('.req-suggestion').count(),0,'suggestions do not interrupt the questions');
+ assert.match(await page.locator('.req-quiz-progress').textContent(),/1 \/ 12/);
+ if(process.env.REQUIREMENTS_GUIDED_PREVIEW){await mkdir(resolve(process.env.REQUIREMENTS_GUIDED_PREVIEW),{recursive:true});await page.locator('.req-workspace').screenshot({path:resolve(process.env.REQUIREMENTS_GUIDED_PREVIEW,'sequential-questions.png')});}
+ await page.click('[data-action="skip-question"]');await page.waitForFunction(()=>document.querySelector('.req-quiz-progress')?.textContent.includes('2 / 12'));
+ await page.click('[data-action="previous-question"]');
+ await page.click('[data-action="leave-questions"]');
+ assert.equal(await page.locator('#req-chat textarea').inputValue(),'处理期间写下的下一条输入');
+ assert.equal(await page.locator('.req-history[open]').count(),0);
+ await page.context().grantPermissions(['clipboard-read','clipboard-write'],{origin:base});
+ await page.click('[data-action="copy"]');
+ await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent.includes('已复制'));
+ const copied=await page.evaluate(async()=>{const items=await navigator.clipboard.read();return {html:await(await items[0].getType('text/html')).text(),text:await(await items[0].getType('text/plain')).text()};});
+ assert.match(copied.html,/<table[^>]*width="900"/,'actual rich clipboard includes table sizing');
+ assert.match(copied.html,/<colgroup>/);assert.match(copied.text,/建议数据范围及操作权限/);
+ const contrast=locator=>locator.evaluate(el=>{const luminance=value=>{const rgb=value.match(/\d+(?:\.\d+)?/g).slice(0,3).map(Number).map(n=>{n/=255;return n<=.04045?n/12.92:((n+.055)/1.055)**2.4;});return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};const style=getComputedStyle(el),a=luminance(style.color),b=luminance(style.backgroundColor);return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);});
+ const newButton=page.locator('.req-sidebar [data-action="new"]');await newButton.hover();
+ assert.ok(await contrast(newButton)>=4.5,'primary hover keeps readable text');
+ await newButton.evaluate(el=>el.focus());assert.ok(await contrast(newButton)>=4.5,'primary focus keeps readable text');
+ const selectedIteration=page.locator('.req-iterations button.selected');await selectedIteration.hover();assert.ok(await contrast(selectedIteration)>=4.5,'selected iteration remains readable');
+ await newButton.hover();await page.mouse.down();assert.ok(await contrast(newButton)>=4.5,'primary pressed state keeps readable text');await page.mouse.move(1490,10);await page.mouse.up();
+ await page.click('[data-tab="resources"]');
+ await page.locator('[data-tab="resources"]').hover();assert.ok(await contrast(page.locator('[data-tab="resources"]'))>=4.5,'selected tab remains readable on hover');
+ assert.equal(await page.locator('[data-action="upload"]').count(),1,'resources offer a designed upload action');
+ if(process.env.REQUIREMENTS_SCREENSHOTS){await mkdir(resolve(process.env.REQUIREMENTS_SCREENSHOTS),{recursive:true});await page.locator('.req-output').screenshot({path:resolve(process.env.REQUIREMENTS_SCREENSHOTS,'resources-empty.png')});}
+ await page.locator('.req-transcription-settings summary').click();await page.fill('[name="transcription-model"]','test-transcriber');
+ const chooserPromise=page.waitForEvent('filechooser');await page.click('[data-action="upload"]');
+ const chooser=await chooserPromise;await chooser.setFiles({name:'需求背景.txt',mimeType:'text/plain',buffer:Buffer.from('本次需要补充导出范围的业务依据。')});
+ await page.waitForFunction(()=>document.querySelector('.req-material')?.textContent.includes('需求背景.txt'));
+ assert.match(await page.locator('.req-material').textContent(),/业务依据/);
+ assert.equal(await page.locator('[name="transcription-model"]').inputValue(),'test-transcriber','custom transcription model survives uploads');
+ assert.equal(await page.locator('.req-transcription-settings').evaluate(el=>el.open),true);
+ if(process.env.REQUIREMENTS_SCREENSHOTS)await page.locator('.req-output').screenshot({path:resolve(process.env.REQUIREMENTS_SCREENSHOTS,'resources-uploaded.png')});
+ await page.click('[data-remove]');await page.waitForFunction(()=>!document.querySelector('.req-material'));
+ await page.locator('#req-upload').setInputFiles({name:'已有录音.webm',mimeType:'audio/webm',buffer:Buffer.from('test-audio')});
+ await page.waitForFunction(()=>document.querySelector('.req-material')?.textContent.includes('已有录音.webm'));
+ const beforeRemove=await api(`/api/requirements?project=${project.id}&entry=index.html`);
+ await api(`/api/requirements?project=${project.id}&entry=index.html`,{version:beforeRemove.version,id:beforeRemove.iterations[0].id,action:'metadata',note:'其他窗口更新迭代说明'});
+ await page.click('[data-remove]');
+ await page.waitForFunction(()=>!document.querySelector('.req-material'),{},{timeout:3000});
+ const afterRemove=await api(`/api/requirements?project=${project.id}&entry=index.html`);
+ assert.equal(afterRemove.iterations[0].materials.length,0,'audio removal persists despite a stale workspace version');
+ assert.equal(afterRemove.iterations[0].document,beforeRemove.iterations[0].document,'removing audio does not change the document');
+ assert.equal(await page.locator('[data-action="record"]').count(),0,'desktop recording entry is removed');
+ const dropped=await page.evaluateHandle(()=>{const data=new DataTransfer();data.items.add(new File(['拖拽的业务说明'],'拖拽说明.md',{type:'text/markdown'}));return data;});
+ await page.locator('.req-upload-zone').dispatchEvent('drop',{dataTransfer:dropped});await dropped.dispose();
+ await page.waitForFunction(()=>document.querySelector('.req-material')?.textContent.includes('拖拽说明.md'));
+ await page.click('[data-remove]');await page.waitForFunction(()=>!document.querySelector('.req-material'));
+ await page.click('[data-tab="document"]');
+ assert.equal(discussions,1);await page.fill('#req-chat textarea','确认：只导出筛选结果，按钮名称注明导出筛选结果');await page.click('#req-chat button[type="submit"]');
+ await page.click('[data-tab="suggestions"]');
+ await page.locator('[data-kind="document"]').waitFor();
+ assert.match(await page.locator('.req-suggestions').textContent(),/采纳后只更新需求文档/);
+ if(process.env.REQUIREMENTS_SCREENSHOTS){
+  await page.fill('#req-chat textarea','导出当前筛选结果，包含客户、金额、到期日和状态。不同角色遵循现有数据权限。');
+  for(const width of [1500,1000,600,375]){
+   await page.setViewportSize({width,height:960});
+   assert.ok(await page.locator('.req-discussion').evaluate(el=>el.scrollWidth<=el.clientWidth+1),'discussion has no horizontal overflow');
+   assert.ok(await page.locator('.req-composer').evaluate(el=>{const r=el.getBoundingClientRect(),panel=el.closest('.req-discussion').getBoundingClientRect();return r.height>=120&&r.bottom<=panel.bottom+1;}),'composer retains space below long conversations');
+   await page.locator('.req-messages').evaluate(el=>{el.scrollTop=0;});
+   await page.locator('.req-workspace').screenshot({path:resolve(process.env.REQUIREMENTS_SCREENSHOTS,`workspace-${width}.png`)});
+  }
+  await page.setViewportSize({width:1500,height:1000});await page.fill('#req-chat textarea','');
+ }
+ const sourceBeforeAcceptance=await readFile(join(root,'index.html'),'utf8');let syncRequests=0;page.on('request',request=>{if(request.url().includes('/api/requirements/sync'))syncRequests++;});
+ await page.click('[data-kind="document"]');await page.locator('[data-review-kind="accept"]').waitFor();await acceptPreview();
+ await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent.includes('正文已更新'));
+ assert.equal(await readFile(join(root,'index.html'),'utf8'),sourceBeforeAcceptance,'acceptance leaves prototype unchanged');assert.equal(syncRequests,0);assert.match(await page.locator('.req-document').textContent(),/将导出报表改为导出筛选结果/);
+ await page.click('[data-action="edit-doc"]');await page.fill('.req-document-editor','# 人工修订\n\n## 6. How\n已确认权限限制。');await page.click('[data-action="save-doc"]');
+ await page.click('[data-action="undo-doc"]');await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent.includes('已撤销'));
+ const beforeReentry=analysisRequests;
+ await page.click('[data-action="close"]');await page.reload();await page.waitForFunction(()=>document.querySelector('#page-select').value==='index.html');await page.click('#requirements-button');
+ await page.waitForFunction(()=>!document.querySelector('[data-action="close"]').disabled);
+ assert.equal(analysisRequests,beforeReentry,'opening the workspace only reads saved state, never analyzes');
+ await page.click('.req-iterations button.selected');await page.waitForFunction(()=>!document.querySelector('[data-action="close"]').disabled);
+ assert.equal(analysisRequests,beforeReentry,'switching iterations does not automatically analyze');
+ await page.click('[data-action="redo-doc"]');await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent==='正文已恢复。');
+ assert.match(await page.locator('.req-document').textContent(),/人工修订/,'automatic changes cannot replace manual document');
+ const beforeManual=analysisRequests;await page.click('[data-action="analyze"]');
+ await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent.includes('正文尚未更新'));
+ assert.ok(await page.locator('.req-review-line.remove').count());assert.ok(await page.locator('.req-review-line.add').count());
+ const beforeSide=page.locator('.req-review-hunk [data-review-side="before"]').first(),afterSide=page.locator('.req-review-hunk [data-review-side="after"]').first();
+ assert.match(await beforeSide.textContent(),/修改前 · 原文/);assert.match(await afterSide.textContent(),/修改后 · AI 建议/);
+ assert.equal(await page.locator('[data-review-side="before"] .add').count(),0);assert.equal(await page.locator('[data-review-side="after"] .remove').count(),0);
+ assert.match(await page.locator('[data-review-side="before"]').allTextContents().then(rows=>rows.join('')),/人工修订/);
+ const leftBox=await beforeSide.boundingBox(),rightBox=await afterSide.boundingBox();assert.ok(rightBox.x>leftBox.x&&Math.abs(rightBox.y-leftBox.y)<2,'desktop comparison shows original and candidate beside each other');
+ for(const width of [1500,375]){await page.setViewportSize({width,height:1000});assert.ok(await page.locator('.req-reviews').evaluate(el=>el.scrollWidth<=el.clientWidth+1),'review diff fits narrow viewports');}await page.setViewportSize({width:1500,height:1000});
+ if(process.env.REQUIREMENTS_REVIEW_PREVIEW){await mkdir(resolve(process.env.REQUIREMENTS_REVIEW_PREVIEW),{recursive:true});await page.locator('.req-output').screenshot({path:resolve(process.env.REQUIREMENTS_REVIEW_PREVIEW,'document-review.png')});}
+ await page.fill('[data-review-feedback]','保留人工修订，只补充CRM来源');await page.click('[data-review-form] button[type="submit"]');await page.waitForFunction(()=>!document.querySelector('[data-action="close"]').disabled&&[...document.querySelectorAll('.req-review-line.add')].some(el=>el.textContent.includes('CRM')));
+ await page.click('[data-review-kind="reject"]');await page.click('[data-tab="document"]');
+ assert.equal(analysisRequests,beforeManual+2,'explicit analysis sends exactly one request');
+ assert.match(await page.locator('.req-document').textContent(),/人工修订/);
+ assert.ok(await page.locator('.req-next-step').count());
+ await page.click('.req-delivery > summary');assert.match(await page.locator('.req-delivery').textContent(),/文字齐备不代表规则正确/);
+ const beforeDeliveryCheck=analysisRequests;await page.click('[data-action="check-delivery"]');await page.waitForFunction(()=>!document.querySelector('[data-action="close"]').disabled);assert.equal(analysisRequests,beforeDeliveryCheck+1,'delivery check explicitly re-analyzes even without source changes');assert.ok(await page.locator('[data-review-kind="accept"]').count());
+ await page.click('[data-review-kind="reject"]');await page.click('[data-tab="document"]');assert.match(await page.locator('.req-document').textContent(),/人工修订/);
+ await page.click('[data-action="finish"]');await page.locator('.req-finish').waitFor();await page.click('.req-finish [data-confirm]');await page.waitForFunction(()=>document.querySelector('.req-iteration-heading small')?.textContent==='已完成');
+ await page.click('[data-tab="resources"]');assert.equal(await page.locator('[data-action="upload"]').isDisabled(),true,'completed iteration cannot upload');assert.equal(await page.locator('[data-action="record"]').count(),0);await page.click('[data-tab="document"]');
+ await page.click('[data-action="reopen"]');await page.waitForFunction(()=>document.querySelector('.req-iteration-heading small')?.textContent==='进行中');
+ await page.click('[data-action="finish"]');await page.click('.req-finish [data-confirm]');await page.waitForFunction(()=>document.querySelector('.req-iteration-heading small')?.textContent==='已完成');
+ await page.click('[data-action="next"]');assert.equal(await page.locator('[name="scene"]').inputValue(),'continue');assert.ok(await page.locator('[name="baselineId"]').inputValue());
+ await page.fill('[name="name"]','第二次迭代');await page.click('#req-create button[type="submit"]:not([name])');await page.waitForFunction(()=>document.querySelector('.req-iteration-heading small')?.textContent==='待开始');
+ const stored=await api(`/api/requirements?project=${project.id}&entry=index.html`);assert.equal(stored.iterations.length,2);assert.equal(stored.iterations[0].completions.length,2);assert.match(stored.iterations[0].document,/人工修订/);
+ mode='fail';await page.click('[data-action="start"]');
+ await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent.includes('需求分析失败'));
+ assert.equal(await page.locator('.req-iteration-heading small').textContent(),'进行中','AI failure does not lose the started iteration');
+ assert.equal(await page.locator('#req-chat button[type="submit"]').isDisabled(),false,'discussion becomes usable after an AI failure');
+ mode='good';await page.fill('#req-chat textarea','补充业务目标后重试');await page.click('#req-chat button[type="submit"]');
+ await page.locator('[data-review-kind="accept"]').waitFor();await acceptPreview();await page.click('[data-action="leave-questions"]');
+ await page.locator('[data-action="interview"]').first().click();await page.click('[data-action="skip-question"]');await page.click('[data-action="apply-answers"]');await page.click('[data-action="new-questions"]');await page.fill('[name="question-count"]','3');await page.fill('[name="option-count"]','2');await page.click('[data-action="generate-questions"]');
+ await page.locator('.req-quiz-question').waitFor();assert.match(await page.locator('.req-quiz-progress').textContent(),/1.*3/);
+ if(process.env.REQUIREMENTS_SCREENSHOTS)await page.locator('.req-workspace').screenshot({path:resolve(process.env.REQUIREMENTS_SCREENSHOTS,'guided-questions.png')});
+ for(const width of [1500,600,375]){await page.setViewportSize({width,height:900});assert.ok(await page.locator('.req-quiz-body').evaluate(el=>el.scrollWidth<=el.clientWidth+1),'questionnaire has no horizontal overflow');}await page.setViewportSize({width:1500,height:900});
+ await page.click('[data-choice="0"]');await page.click('[data-action="answer-question"]');await page.waitForFunction(()=>document.querySelector('.req-quiz-progress')?.textContent.includes('2 / 3'));
+ await page.locator('.req-quiz [data-action="sync-answers"]').click();await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent.includes('最新回答已整理'));
+ assert.match(await page.locator('.req-quiz-progress').textContent(),/2 \/ 3/,'partial synthesis continues with the next unanswered question');
+ const partialState=await api(`/api/requirements?project=${project.id}&entry=index.html`),partialRound=partialState.iterations.at(-1).interviews.at(-1);
+ assert.equal(partialRound.submittedAt,undefined);assert.equal(partialRound.questions[0].needsDocumentSync,false);assert.equal(partialRound.questions[1].status,'pending');
+ await page.fill('[name="question-answer"]','财务和采购共同使用');await page.click('[data-action="answer-question"]');await page.waitForFunction(()=>document.querySelector('.req-quiz-progress')?.textContent.includes('3 / 3'));
+ await page.click('[data-action="leave-questions"]');await page.click('[data-action="close"]');await page.reload();await page.waitForFunction(()=>document.querySelector('#page-select').value==='index.html');await page.click('#requirements-button');await page.waitForFunction(()=>!document.querySelector('[data-action="close"]').disabled);
+ assert.match(await page.locator('.req-quiz-progress').textContent(),/3 \/ 3/,'reopening resumes the first unanswered question');
+ await page.click('[data-action="previous-question"]');assert.equal(await page.locator('[name="question-answer"]').inputValue(),'财务和采购共同使用');await page.click('[data-action="answer-question"]');await page.waitForFunction(()=>document.querySelector('.req-quiz-progress')?.textContent.includes('3 / 3'));
+ await page.click('[data-action="skip-question"]');await page.locator('.req-quiz-summary').waitFor();assert.match(await page.locator('.req-quiz-summary').textContent(),/已回答 2.*跳过 1/s);
+ await page.click('[data-action="apply-answers"]');await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent.includes('回答已整理'));
+ await page.click('[data-tab="confirmed"]');assert.match(await page.locator('.req-understanding').textContent(),/财务和采购共同使用/);assert.equal(await page.locator('[data-tab="confirmed"]').getAttribute('aria-pressed'),'true');
+ await page.click('[data-tab="pending"]');assert.match(await page.locator('.req-understanding').textContent(),/本轮预算是多少/);
+ await page.click('[data-tab="document"]');assert.equal(await page.locator('.req-doc-status').count(),0);assert.equal(await page.locator('.req-document').count(),1);
+ const quizStored=await api(`/api/requirements?project=${project.id}&entry=index.html`),round=quizStored.iterations.at(-1).interviews.at(-1);assert.ok(round.submittedAt);assert.equal(round.questions[0].answer,'可选方案 1');assert.equal(round.questions[1].answer,'财务和采购共同使用');assert.equal(round.questions[2].status,'skipped');
+ await page.click('[data-tab="pending"]');const pendingBefore=await page.locator('.req-understanding article').count();await page.locator('[data-supplement]').first().click();await page.fill('[name="question-answer"]','已补充：预算 20 万元');await page.click('[data-action="answer-question"]');await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent.includes('回答已保存'));await page.click('[data-tab="confirmed"]');assert.match(await page.locator('.req-understanding').textContent(),/预算 20 万元/);
+ await page.locator('[data-edit-answer]').last().click();assert.equal(await page.locator('#req-answer-edit textarea').inputValue(),'已补充：预算 20 万元');await page.fill('#req-answer-edit textarea','修订：预算 30 万元');await page.click('#req-answer-edit button[type="submit"]');await page.waitForFunction(()=>!document.querySelector('#req-answer-edit'));
+ await page.click('[data-tab="pending"]');assert.equal(await page.locator('.req-understanding article').count(),pendingBefore-1);
+ await page.click('[data-tab="confirmed"]');await page.locator('[data-edit-answer]').first().click();await page.selectOption('#req-answer-edit select','1');await page.click('#req-answer-edit button[type="submit"]');await page.waitForFunction(()=>!document.querySelector('#req-answer-edit'));assert.match(await page.locator('.req-understanding').textContent(),/可选方案 2/);
+ await page.click('[data-action="close"]');await page.reload();await page.waitForFunction(()=>document.querySelector('#page-select').value==='index.html');await page.click('#requirements-button');await page.waitForFunction(()=>!document.querySelector('[data-action="close"]').disabled);await page.click('[data-tab="confirmed"]');assert.match(await page.locator('.req-understanding').textContent(),/修订：预算 30 万元/);await page.click('[data-action="sync-answers"]');await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent.includes('最新回答已整理'));assert.equal(await page.locator('[data-action="sync-answers"]').count(),0);
+ await page.click('[data-tab="conflicts"]');assert.match(await page.locator('.req-conflicts').textContent(),/历史需求/);assert.match(await page.locator('.req-conflicts').textContent(),/当前回答/);
+ await page.fill('[data-conflict-explanation]','Excel导入CRM，驾驶舱读取CRM正式绩效');
+ for(const width of [1500,600,375]){await page.setViewportSize({width,height:1000});assert.ok(await page.locator('.req-conflicts').evaluate(el=>el.scrollWidth<=el.clientWidth+1),'conflict explanation remains usable without horizontal overflow');}await page.setViewportSize({width:1500,height:1000});
+ if(process.env.REQUIREMENTS_CONFLICT_PREVIEW){await mkdir(resolve(process.env.REQUIREMENTS_CONFLICT_PREVIEW),{recursive:true});await page.locator('.req-output').screenshot({path:resolve(process.env.REQUIREMENTS_CONFLICT_PREVIEW,'conflict-explanation.png')});}
+ await page.click('[data-tab="document"]');await page.click('[data-tab="conflicts"]');assert.match(await page.locator('[data-conflict-explanation]').inputValue(),/Excel导入CRM/);
+ mode='fail';await page.click('[data-conflict-form] button[type="submit"]');await page.waitForFunction(()=>document.querySelector('.req-banner')?.textContent.includes('解释已保存，AI 更新尚未完成'));
+ const conflictSaved=await api(`/api/requirements?project=${project.id}&entry=index.html`);assert.equal(conflictSaved.iterations.at(-1).conflicts[0].status,'pending');assert.match(conflictSaved.iterations.at(-1).conflicts[0].explanation,/Excel导入CRM/);
+ await page.click('[data-action="close"]');await page.reload();await page.waitForFunction(()=>document.querySelector('#page-select').value==='index.html');await page.click('#requirements-button');await page.waitForFunction(()=>!document.querySelector('[data-action="close"]').disabled);await page.click('[data-tab="conflicts"]');assert.match(await page.locator('[data-conflict-explanation]').inputValue(),/Excel导入CRM/);
+ mode='good';await page.click('[data-conflict-form] button[type="submit"]');await page.locator('[data-review-kind="accept"]').waitFor();const beforeConflictAccept=await api(`/api/requirements?project=${project.id}&entry=index.html`);assert.equal(beforeConflictAccept.iterations.at(-1).conflicts[0].status,'pending');await acceptPreview();await page.click('[data-tab="conflicts"]');
+ assert.match(await page.locator('[data-tab="conflicts"]').textContent(),/逻辑冲突 · 0/);await page.locator('.req-resolved-conflicts>summary').click();assert.match(await page.locator('.req-resolved-conflicts').textContent(),/已更新文档/);
+ await page.click('[data-tab="document"]');assert.match(await page.locator('.req-document').textContent(),/Excel导入CRM/);
+ await page.click('[data-tab="resources"]');
+ for(const width of [1500,1000,600,375]){await page.setViewportSize({width,height:900});assert.ok(await page.locator('.req-workspace').evaluate(el=>{const r=el.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1;}));assert.ok(await page.locator('.req-resource-panel').evaluate(el=>el.scrollWidth<=el.clientWidth+1),'resources have no horizontal overflow');if(process.env.REQUIREMENTS_SCREENSHOTS&&width===375)await page.locator('.req-output').screenshot({path:resolve(process.env.REQUIREMENTS_SCREENSHOTS,'resources-mobile.png')});}
+ assert.deepEqual(errors,[]);console.log('Requirements browser lifecycle, AI discussion, checked source sync, document persistence and frozen completion history passed.');
+}finally{await browser.close();await new Promise(r=>server.close(r));await new Promise(r=>model.close(r));await rm(temp,{recursive:true,force:true});}

@@ -155,5 +155,46 @@ export function createAIService(editorDir) {
     validateVisualEdits(value.draft);
     const saved=await applyAISource(project,editorDir,{revision:value.revision,files:value.files,draft:value.draft});proposals.delete(id);return saved;
   }
-  return {settings,listModels,testConnection,generate,proposal,apply};
+  // Requirements conversations share credentials, but never invoke source mutation.
+  async function discussRequirements({instruction,task,images=[]}) {
+    const options=await inputOptions(),key=credential(options);
+    const checked=validateAIContext({images}).images;
+    if(Buffer.byteLength(JSON.stringify(task))>2*1024*1024)throw fail('本次需求上下文超过 2MB，请缩小关联页面或资料范围',413);
+    const endpoint=options.endpoint.endsWith('/chat/completions')?options.endpoint:`${options.endpoint}/chat/completions`;
+    let envelope;
+    try{
+      // Keep long generations active through gateways while collecting the complete result.
+      const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${key}`},body:JSON.stringify({model:options.model,stream:true,messages:[{role:'system',content:instruction},{role:'user',content:checked.length?[{type:'text',text:JSON.stringify(task)},...checked.map(image=>({type:'image_url',image_url:{url:image.url}}))]:JSON.stringify(task)}]}),dispatcher:generationDispatcher,signal:AbortSignal.timeout(generationTimeout),redirect:'error'});
+      if(!response.ok)throw fail(`需求分析失败（HTTP ${response.status}）${checked.length?'，请确认接口支持图片输入':''}；已有文档未被覆盖`,502);
+      envelope=await readAIModelResponse(response);
+    }catch(error){
+      if(error.statusCode)throw error;
+      const code=error.cause?.code||error.code;
+      if(['TimeoutError','AbortError'].includes(error.name))throw fail('需求分析超时（已等待 20 分钟），请稍后重试或缩小关联页面范围；已有文档未被覆盖',504);
+      if(['UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT','ETIMEDOUT'].includes(code))throw fail('连接模型服务超时，请稍后重试；已有文档未被覆盖',504);
+      if(['UND_ERR_SOCKET','ECONNRESET','EPIPE'].includes(code))throw fail('模型连接中断，接口未能完成本次分析，请稍后重试；已有文档未被覆盖',502);
+      if(['ECONNREFUSED','EHOSTUNREACH','ENETUNREACH'].includes(code))throw fail('无法连接模型服务，请在 AI 设置中测试连接并检查接口地址及网络；已有文档未被覆盖',502);
+      if(['ENOTFOUND','EAI_AGAIN'].includes(code))throw fail('模型接口地址无法解析，请检查接口地址及网络；已有文档未被覆盖',502);
+      if(error.message==='模型流式响应中断，未收到完整结果，请重试')throw fail('需求分析响应中断，未收到完整结果，请重试；已有文档未被覆盖',502);
+      throw fail('无法完成需求分析，请在 AI 设置中测试连接后重试；已有文档未被覆盖',502);
+    }
+    if(envelope.choices?.[0]?.finish_reason==='length')throw fail('需求回复被截断，未更新文档，请缩小本次问题范围后重试',502);
+    const content=envelope.choices?.[0]?.message?.content;
+    try{return JSON.parse(String(content).trim().replace(/^```(?:json)?\s*|\s*```$/g,''));}catch{throw fail('模型未返回有效的需求结构，请重试；文档未被覆盖',502);}
+  }
+  async function transcribeRequirements({name,url,model='whisper-1'}) {
+    const match=/^data:(audio\/[a-zA-Z0-9.+-]+)(?:;codecs=[a-zA-Z0-9.-]+)?;base64,([A-Za-z0-9+/]+={0,2})$/.exec(url||'');
+    if(!match || match[2].length>20*1024*1024)throw fail('录音格式无效或超过 15MB');
+    if(typeof model!=='string'||!model.trim()||model.length>200)throw fail('转写模型名称无效');
+    const options=await inputOptions(),key=credential(options);
+    const endpoint=options.endpoint.replace(/\/chat\/completions$/,'')+'/audio/transcriptions';
+    const body=new FormData();body.set('model',model);body.set('file',new Blob([Buffer.from(match[2],'base64')],{type:match[1]}),String(name||'recording.webm').replace(/[/\\]/g,'_'));
+    let response;try{response=await fetch(endpoint,{method:'POST',headers:{authorization:`Bearer ${key}`},body,signal:AbortSignal.timeout(180000),redirect:'error'});}catch{throw fail('录音转写连接失败，原录音仍保留，可稍后重试或手动补充文字',502);}
+    if(!response.ok)throw fail(`录音转写失败（HTTP ${response.status}）。此服务需支持 /audio/transcriptions 及所选转写模型；可改模型或粘贴文字稿`,502);
+    const chunks=[];let bytes=0;for await(const chunk of response.body){bytes+=chunk.length;if(bytes>600000)throw fail('录音文字过长，请分段提供',413);chunks.push(Buffer.from(chunk));}const text=Buffer.concat(chunks).toString('utf8');
+    let result;try{result=JSON.parse(text);}catch{throw fail('转写接口没有返回有效文字',502);}
+    if(typeof result.text!=='string'||!result.text.trim()||result.text.length>100000)throw fail('未识别到有效录音文字，请重试或手动补充',502);
+    return result.text;
+  }
+  return {settings,listModels,testConnection,generate,proposal,apply,discussRequirements,transcribeRequirements};
 }

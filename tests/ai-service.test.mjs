@@ -171,3 +171,63 @@ test('generation allows twenty minutes and explains timeout without changing sou
   assert.equal(await readFile(join(root,'index.html'),'utf8'),original);
  } finally {await rm(root,{recursive:true,force:true});}
 });
+
+test('requirements connection failures distinguish timeout, disconnect and unreachable host without exposing credentials',async(t)=>{
+ const root=await mkdtemp(join(tmpdir(),'requirements-connection-'));
+ try{
+  const service=createAIService(root);
+  await service.settings({endpoint:'http://127.0.0.1:8317/v1',model:'test',apiKey:'test-only-private-key'});
+  const cases=[
+   [new DOMException('test-only-private-key','TimeoutError'),/需求分析超时.*20 分钟/,504],
+   [Object.assign(new TypeError('test-only-private-key'),{cause:{code:'UND_ERR_SOCKET'}}),/模型连接中断/,502],
+   [Object.assign(new TypeError('test-only-private-key'),{cause:{code:'ECONNREFUSED'}}),/无法连接模型服务/,502],
+   [Object.assign(new TypeError('test-only-private-key'),{cause:{code:'ENOTFOUND'}}),/模型接口地址无法解析/,502],
+   [Object.assign(new TypeError('test-only-private-key'),{cause:{code:'UND_ERR_CONNECT_TIMEOUT'}}),/连接模型服务超时/,504],
+  ];
+  for(const [failure,message,status] of cases){
+   t.mock.method(globalThis,'fetch',async()=>{throw failure;});
+   await assert.rejects(service.discussRequirements({instruction:'测试',task:{}}),error=>{
+    assert.match(error.message,message);assert.match(error.message,/文档未被覆盖/);assert.doesNotMatch(error.message,/test-only-private-key/);assert.equal(error.statusCode,status);return true;
+   });
+   t.mock.restoreAll();
+  }
+ }finally{t.mock.restoreAll();await rm(root,{recursive:true,force:true});}
+});
+
+test('requirements analysis streams long generation and only returns a complete structured result',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'requirements-stream-'));
+ const result={reply:'已整理需求',document:'# 5W2H\n保留已有规则',questions:[],suggestions:[]};
+ let mode='complete';
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const chunk of req)raw+=chunk;
+  const body=JSON.parse(raw);
+  // A gateway cannot keep an idle non-streaming generation open indefinitely.
+  if(!body.stream){res.writeHead(504);res.end();return;}
+  if(mode==='json'){res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(result)}}]}));return;}
+  res.setHeader('content-type','text/event-stream');res.write(': keepalive\n\n');
+  const content=JSON.stringify(result);
+  for(let i=0;i<content.length;i+=5)res.write('data: '+JSON.stringify({choices:[{delta:{content:content.slice(i,i+5)}}]})+'\n\n');
+  if(mode!=='interrupted')res.write('data: '+JSON.stringify({choices:[{delta:{},finish_reason:mode==='truncated'?'length':'stop'}]})+'\n\n');
+  res.end('data: [DONE]\n\n');
+ });
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ try{
+  const service=createAIService(root);await service.settings({endpoint:`http://127.0.0.1:${server.address().port}/v1`,model:'test',apiKey:'test-only-key'});
+  const input={instruction:'测试',task:{document:'已有规则'}};
+  assert.deepEqual(await service.discussRequirements(input),result);
+  mode='json';assert.deepEqual(await service.discussRequirements(input),result);
+  mode='interrupted';await assert.rejects(service.discussRequirements(input),/中断.*文档未被覆盖/);
+  mode='truncated';await assert.rejects(service.discussRequirements(input),/截断/);
+ }finally{await new Promise(resolve=>server.close(resolve));await rm(root,{recursive:true,force:true});}
+});
+
+test('requirements response body connection errors retain the document-preservation message',async(t)=>{
+ const root=await mkdtemp(join(tmpdir(),'requirements-body-failure-'));
+ try{
+  const service=createAIService(root);await service.settings({endpoint:'http://127.0.0.1:8317/v1',model:'test',apiKey:'test-only-private-key'});
+  t.mock.method(globalThis,'fetch',async()=>new Response(new ReadableStream({start(controller){controller.error(Object.assign(new TypeError('test-only-private-key'),{cause:{code:'UND_ERR_SOCKET'}}));}}),{headers:{'content-type':'text/event-stream'}}));
+  await assert.rejects(service.discussRequirements({instruction:'测试',task:{}}),error=>{
+   assert.match(error.message,/模型连接中断.*文档未被覆盖/);assert.doesNotMatch(error.message,/test-only-private-key/);assert.equal(error.statusCode,502);return true;
+  });
+ }finally{t.mock.restoreAll();await rm(root,{recursive:true,force:true});}
+});

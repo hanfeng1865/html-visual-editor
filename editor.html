@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>HTML 可视化编辑器</title>
   <link rel="stylesheet" href="editor.css?v=13" />
+  <link rel="stylesheet" href="requirements.css?v=1" />
 </head>
 <body>
   <div class="editor-shell">
@@ -47,6 +48,7 @@
 
     <div class="project-bar" aria-label="项目与页面">
       <button id="open-project-button" type="button">▱ 打开项目文件夹</button>
+      <button id="requirements-button" type="button" title="管理版本迭代、讨论需求并生成文档">迭代需求</button>
       <label>项目<select id="project-select" aria-label="当前项目"><option value="builtin">当前驾驶舱原型</option></select></label>
       <button id="remove-project-button" type="button" title="仅从编辑器列表移除当前项目，不删除原文件夹" disabled>移除项目</button>
       <label>页面<select id="page-select" aria-label="当前 HTML 页面"><option>正在读取…</option></select></label>

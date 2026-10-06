@@ -3,6 +3,7 @@ import {createAIAttachments} from './ai-attachments.mjs';
 import {renderSourceDiff} from './source-diff.mjs';
 import {chartTemplates} from './chart-components.mjs';
 import {createAIChat} from './ai-chat.mjs';
+import {createRequirementsWorkspace} from './requirements-ui.mjs';
 import {verifyAIPage,compareAIErrors,loadAIFrame} from './ai-editor.mjs';
 import {splitEditRoutes} from './ai-routing.mjs';
 import { segmentIntersectsRect } from './sweep-selection.mjs';
@@ -3320,3 +3321,16 @@ aiDialog.addEventListener('close',closeModelMenu);
 document.getElementById('ai-endpoint').addEventListener('input',()=>{document.getElementById('ai-http-note').hidden=!document.getElementById('ai-endpoint').value.startsWith('http:');});
 
 document.getElementById('ai-start-edit').onclick=()=>{aiDialog.close();document.querySelector('[data-mode="edit"]').click();showToast('选中组件并修改，需 AI 写回的修改会自动进入待办');};
+
+const requirementsWorkspace=createRequirementsWorkspace({
+  endpoint:projectEndpoint,
+  getProject:()=>projectConfig,
+  hasDraft:()=>localStorage.getItem(DRAFT_DIRTY_KEY)==='1',
+  onSettings:()=>openAI(),
+  onApplied:async()=>{await refreshSource();showToast('需求同步已保存到原型，主画布已刷新');},
+  getSelection:()=>selectedElement?`${projectConfig?.entry||projectEntry}\n${elementLabel(selectedElement)}\n${selectedElement.outerHTML.slice(0,6000)}`:'',
+});
+document.getElementById('requirements-button').onclick=()=>{
+  if(!projectConfig){showToast('请先打开 HTML 项目文件夹');return;}
+  commitCardForm();void requirementsWorkspace.open();
+};

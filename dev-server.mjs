@@ -1,5 +1,6 @@
 import {createLanShareService} from './lan-share.mjs';
 import {createAIService} from './ai-service.mjs';
+import {createRequirementsService} from './requirements-service.mjs';
 import {installAIErrorMonitor} from './ai-editor.mjs';
 import { readAnnotations, writeAnnotations } from './change-annotations-store.mjs';
 import {ensureSourceOrigin,readSourceState,saveSource,restoreSource,listSourceVersions,readSourceVersion} from './source-store.mjs';
@@ -66,6 +67,7 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
   const sharing=createLanShareService({mimeTypes,stateFile:join(editorDir,'.editor-workspaces','lan-shares.json')});
   const projectRoot = resolve(rootDir);
   const workspaces = createWorkspaceManager(projectRoot, { registryDir: join(editorDir, '.editor-workspaces') });
+  const requirements=createRequirementsService(editorDir,{ai,workspaces});
 
   const server=createServer(async (request, response) => {
     try {
@@ -133,6 +135,16 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
         return json(response, 200, folder ? await workspaces.open(folder) : { cancelled:true });
       }
       if (url.pathname === '/api/projects/current' && request.method === 'GET') return json(response, 200, await workspaces.describe(workspaceId, entry));
+      if(url.pathname==='/api/requirements'||url.pathname.startsWith('/api/requirements/')) {
+        const project=await workspaces.describe(workspaceId,entry);
+        if(request.method==='GET'&&url.pathname==='/api/requirements')return json(response,200,await requirements.read(project));
+        if(request.method!=='POST')return json(response,405,{error:'不支持此操作'});
+        const body=await readJsonBody(request,22*1024*1024);
+        if(!body||typeof body!=='object'||Array.isArray(body))return json(response,400,{error:'需求请求必须是对象'});
+        const operation={'/api/requirements':'change','/api/requirements/chat':'chat','/api/requirements/interview':'interview','/api/requirements/transcribe':'transcribe','/api/requirements/sync':'sync'}[url.pathname];
+        if(!operation)return json(response,404,{error:'需求接口不存在'});
+        return json(response,200,await requirements[operation](project,body));
+      }
       if(['/api/source-state','/api/source-save','/api/source-history'].includes(url.pathname)) {
         const project=await workspaces.describe(workspaceId,entry);
         if(url.pathname==='/api/source-state' && request.method==='GET')return json(response,200,await ensureSourceOrigin(project,editorDir));

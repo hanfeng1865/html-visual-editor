@@ -1,3 +1,4 @@
+import {prdAnnotationsScript} from './prd-annotations-runtime.mjs';
 import {createServer} from 'node:http';
 import {randomBytes,createHash} from 'node:crypto';
 import {readdir,stat,readFile,realpath,mkdir,writeFile,rename,rm} from 'node:fs/promises';
@@ -12,8 +13,9 @@ export function lanAddresses() {
 // A separate listener serves only shared project assets, never editor APIs.
 const blockedNames=new Set(['node_modules','__pycache__','editor-config.json','ai-config.json','visual-edits.json','change-annotations.json']);
 const publicPath=path=>!path.includes('\\') && !path.split('/').some(part=>part.startsWith('.') || blockedNames.has(part));
-function reloadScript(prefix,revision) {
-  return `<script>(()=>{const revision=${JSON.stringify(revision)};let checking=false;setInterval(async()=>{if(checking)return;checking=true;try{const response=await fetch(${JSON.stringify(prefix+'__share_revision')},{cache:'no-store'});if(response.ok && (await response.json()).revision!==revision)location.reload();}catch{}finally{checking=false;}},2000);})();</script>`;
+export const isShareableFile=(path,mimeTypes)=>publicPath(path) && Object.hasOwn(mimeTypes,extname(path).toLowerCase());
+function reloadScript(prefix,revision,path) {
+  return `<script>(()=>{const revision=${JSON.stringify(revision)};let checking=false;setInterval(async()=>{if(checking)return;checking=true;try{const response=await fetch(${JSON.stringify(prefix+'__share_revision?entry='+encodeURIComponent(path))},{cache:'no-store'});if(response.ok && (await response.json()).revision!==revision)location.reload();}catch{}finally{checking=false;}},2000);})();</script>`;
 }
 // Render the project in the same layout viewport as the editor. Scaling the
 // outer frame preserves media queries and absolute coordinates together.
@@ -23,15 +25,16 @@ function sharedCanvasPage(share,path=share.entry,search='') {
   const src=(entry+'?'+query).replaceAll('&','&amp;').replaceAll('"','&quot;');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>页面预览</title><style>
     html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff}
+    body{display:flex}#share-canvas{flex:1;min-width:0;min-height:0;overflow:hidden}#share-prd-sidebar{width:340px;flex-shrink:0;border-left:1px solid #dce2eb;background:white;height:100%;box-sizing:border-box}#share-prd-sidebar[hidden]{display:none}@media(max-width:700px){body{flex-direction:column}#share-prd-sidebar{width:100%;height:40%;border-left:0;border-top:1px solid #dce2eb}}
     #share-page-frame{display:block;border:0;transform-origin:0 0;width:${share.viewportWidth}px}
-  </style></head><body><iframe id="share-page-frame" name="share-page" title="分享页面" src="${src}"></iframe><script>(()=>{
+  </style></head><body><main id="share-canvas"><iframe id="share-page-frame" name="share-page" title="分享页面" src="${src}"></iframe></main><aside id="share-prd-sidebar" hidden aria-label="PRD 标注说明"></aside><script>(()=>{
     const frame=document.getElementById('share-page-frame'),width=${share.viewportWidth};
-    const resize=()=>{const scale=innerWidth/width;frame.style.height=(innerHeight/scale)+'px';frame.style.transform='scale('+scale+')';};
+    const resize=()=>{const canvas=document.getElementById('share-canvas'),scale=canvas.clientWidth/width;frame.style.height=(canvas.clientHeight/scale)+'px';frame.style.transform='scale('+scale+')';};
     if(location.hash)frame.src+=location.hash;
     addEventListener('resize',resize);resize();
   })();</script></body></html>`;
 }
-export function createLanShareService({mimeTypes,addresses=lanAddresses,stateFile}) {
+export function createLanShareService({mimeTypes,addresses=lanAddresses,stateFile,readPRD}) {
   const shares=new Map();let server=null,starting=null,port=0;
   let writes=Promise.resolve();
   async function restore() {
@@ -74,7 +77,7 @@ export function createLanShareService({mimeTypes,addresses=lanAddresses,stateFil
           const path=folder?`${folder}/${item.name}`:item.name;
           if(!publicPath(path) || item.isSymbolicLink())continue;
           if(item.isDirectory()){await walk(path);continue;}
-          if(!item.isFile() || !Object.hasOwn(mimeTypes,extname(path).toLowerCase()))continue;
+          if(!item.isFile() || !isShareableFile(path,mimeTypes))continue;
           const file=await insideProject(share.root,path),info=await stat(file);size+=info.size;
           if(size>200*1024*1024 || files.size>=10000)throw new Error('分享项目超过大小限制');
           files.set(path,file);hash.update(JSON.stringify([path,info.size,info.mtimeMs,info.ctimeMs]));
@@ -103,10 +106,12 @@ export function createLanShareService({mimeTypes,addresses=lanAddresses,stateFil
       if(!publicPath(path))return fail(404);
       if(path.endsWith('/'))path+='index.html';
       const live=share.root?await liveFiles(share):null;
+      const prd=readPRD&&(path==='__share_revision'||/\.html?$/i.test(path))?await readPRD(share,path==='__share_revision'?(url.searchParams.get('entry')||share.entry):path):null;
+      const revision=createHash('sha256').update(JSON.stringify([live?.revision||share.revision,prd?.revision])).digest('hex');
       if(shares.get(share.key)!==share)return fail(404);
       if(path==='__share_revision') {
         response.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});
-        return response.end(request.method==='HEAD'?undefined:JSON.stringify({revision:live?.revision || share.revision}));
+        return response.end(request.method==='HEAD'?undefined:JSON.stringify({revision}));
       }
       let bytes;
       if(live) {
@@ -124,7 +129,7 @@ export function createLanShareService({mimeTypes,addresses=lanAddresses,stateFil
       }
       let content=['.html','.htm','.css'].includes(extension)?scopeRootUrls(bytes.toString('utf8'),prefix,extension==='.css'):bytes;
       if(['.html','.htm'].includes(extension)) {
-        const script=reloadScript(prefix,live?.revision || share.revision);
+        const script=reloadScript(prefix,revision,path)+(prd?.points?.length?prdAnnotationsScript({points:prd.points}):'');
         content=/<\/body\s*>/i.test(content)?content.replace(/<\/body\s*>/i,()=>script+'</body>'):content+script;
       }
       response.writeHead(200,{'content-type':mimeTypes[extension]||'application/octet-stream','cache-control':'no-store','x-content-type-options':'nosniff'});
@@ -147,7 +152,7 @@ export function createLanShareService({mimeTypes,addresses=lanAddresses,stateFil
       if(viewportWidth!==undefined && (!Number.isInteger(viewportWidth) || viewportWidth<320 || viewportWidth>4096))throw Object.assign(new Error('分享画布宽度无效'),{statusCode:400});
       const hosts=addresses();
       if(!hosts.length)throw Object.assign(new Error('未找到局域网地址，请先连接 Wi-Fi 或有线网络'),{statusCode:409});
-      const allowed=new Map(files.filter(([path])=>Object.hasOwn(mimeTypes,extname(path).toLowerCase()) && publicPath(path)));
+      const allowed=new Map(files.filter(([path])=>isShareableFile(path,mimeTypes)));
       if(!allowed.has(entry))throw new Error('分享页面不存在');
       await start();
       const token=shares.get(key)?.token || randomBytes(24).toString('hex');

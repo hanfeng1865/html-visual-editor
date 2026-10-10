@@ -1,0 +1,36 @@
+import {chromium} from 'playwright';
+import {createDevServer} from '../dev-server.mjs';
+import {mkdtemp,cp,writeFile,mkdir,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import assert from 'node:assert/strict';
+const temp=await mkdtemp(join(tmpdir(),'table-column-move-')),project=join(temp,'project'),editorDir=join(temp,'editor');
+await mkdir(project);
+await cp(new URL('../',import.meta.url),editorDir,{recursive:true,filter:path=>!['.git','node_modules','.editor-workspaces','editor-config.json','output'].includes(path.split(/[\\/]/).pop())});
+await writeFile(join(project,'index.html'),`<!doctype html><style>table{width:600px;table-layout:fixed;border-spacing:0}th,td{height:44px;padding:0;background:white}col:nth-child(1){width:100px}col:nth-child(2){width:200px}col:nth-child(3){width:300px}.pin{position:sticky;left:100px}</style><table id="vehicles"><colgroup><col id="col-code" style="width:100px"><col id="col-category" style="width:200px"><col id="col-driver" style="width:300px"></colgroup><thead><tr><th id="code">车牌</th><th id="category" class="pin">车辆类别</th><th id="driver">驾驶人</th></tr></thead><tbody><tr><td>A001</td><td class="pin">公司</td><td>张明</td></tr><tr><td>A002</td><td class="pin">私人</td><td>李华</td></tr></tbody></table><div id="ordinary"><p id="first">First</p><p id="second">Second</p></div>`);
+const server=createDevServer({rootDir:temp,editorDir});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+const base=`http://127.0.0.1:${server.address().port}`;
+const config=await(await fetch(base+'/api/projects/open',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:project})})).json();
+const browser=await chromium.launch({headless:true});
+try {
+ const page=await browser.newPage({viewport:{width:1600,height:1100}});page.setDefaultTimeout(7000);
+ const f=page.frameLocator('#prototype-frame');
+ await page.goto(`${base}/editor/editor.html?project=${config.id}&entry=index.html`);await f.locator('body[data-ve-editor-ready=true]').waitFor();await page.locator('[data-mode=edit]').click();
+ const values=()=>f.locator('#vehicles').evaluate(table=>[...table.rows].map(row=>[...row.cells].map(cell=>cell.textContent)));
+ const original=[['车牌','车辆类别','驾驶人'],['A001','公司','张明'],['A002','私人','李华']];
+ const moved=[['车辆类别','车牌','驾驶人'],['公司','A001','张明'],['私人','A002','李华']];
+ await f.locator('#category').click({modifiers:['Alt']});await page.locator('#move-up-button').click();
+ assert.deepEqual(await values(),moved,'moving a header must move the matching body cells');
+ assert.deepEqual(await f.locator('col').evaluateAll(cols=>cols.map(col=>col.id)),['col-category','col-code','col-driver']);
+ assert.deepEqual(await f.locator('.pin').evaluateAll(cells=>cells.map(cell=>getComputedStyle(cell).left)),['0px','0px','0px']);
+ await page.locator('#move-down-button').click();assert.deepEqual(await values(),original);
+ await page.locator('#move-up-button').click();assert.deepEqual(await values(),moved);
+ await page.locator('#undo-button').click();await page.waitForTimeout(150);assert.deepEqual(await values(),original);
+ await page.locator('#redo-button').click();await page.waitForTimeout(150);assert.deepEqual(await values(),moved);
+ const saved=page.waitForResponse(response=>response.url().includes('/api/source-save')&&response.request().method()==='POST');
+ await page.locator('#save-button').click();assert.equal((await saved).status(),200);await page.waitForFunction(()=>!document.querySelector('#save-button').disabled&&!document.querySelector('#source-dialog').open);
+ await page.reload();await f.locator('body[data-ve-editor-ready=true]').waitFor();assert.deepEqual(await values(),moved);
+ await page.locator('[data-mode=edit]').click();await f.locator('#second').click({modifiers:['Alt']});await page.locator('#move-up-button').click();
+ assert.deepEqual(await f.locator('#ordinary > p').evaluateAll(nodes=>nodes.map(node=>node.id)),['second','first']);
+ console.log('PASS: whole-column moves, colgroup widths and sticky offsets, both directions, undo/redo, source save/reload and ordinary element ordering');
+}finally{await browser.close();await new Promise(r=>server.close(r));await rm(temp,{recursive:true,force:true});}

@@ -35,11 +35,66 @@ export function loadAIFrame(frame,url,container=null) {
   });
 }
 
+const viewHistories=new WeakMap(),restoredViews=new WeakMap();
+function isViewControl(element) {
+  if(!element || element.disabled)return false;
+  if(element.matches('button') && element.type!=='button')return false;
+  if(element.matches('[role="tab"]'))return true;
+  if(element.matches('a[href]')) {
+    const url=new URL(element.href,element.ownerDocument.URL),current=new URL(element.ownerDocument.URL);
+    return url.origin===current.origin && url.pathname===current.pathname && url.search===current.search;
+  }
+  return element.matches('button') && /^(查看|详情|返回(?:列表)?|返回车辆列表|关闭)$/.test(element.textContent.trim());
+}
+export function trackAIView(doc,selectorFor) {
+  const history=[];viewHistories.set(doc,history);
+  // Bubble phase excludes clicks intercepted by the editor to select components.
+  doc.addEventListener('click',event=>{
+    const control=event.target.closest?.('button,a[href],[role="tab"]');
+    if(!isViewControl(control))return;
+    const selector=selectorFor(control);
+    if(!selector || doc.querySelectorAll(selector).length!==1)return;
+    history.push({selector,label:control.textContent.trim()});
+  });
+}
+export function captureAIView(element) {
+  if(!element || element.closest('[hidden]'))return {};
+  const actions=viewHistories.get(element.ownerDocument);
+  return actions?.length && actions.length<=32?{viewActions:JSON.stringify(actions)}:{};
+}
+export async function restoreAIView(doc,context={}) {
+  const serialized=context.viewActions;
+  if(!serialized || restoredViews.get(doc)===serialized)return;
+  let actions;
+  try{actions=JSON.parse(serialized);}catch{throw new Error('页面进入步骤格式无效');}
+  if(!Array.isArray(actions) || actions.length>32)throw new Error('页面进入步骤格式无效');
+  for(const step of actions) {
+    if(!step || typeof step.selector!=='string' || typeof step.label!=='string')throw new Error('页面进入步骤格式无效');
+    const controls=doc.querySelectorAll(step.selector),control=controls[0];
+    if(controls.length!==1 || !isViewControl(control) || control.textContent.trim()!==step.label)throw new Error('无法重现目标页面：'+step.selector);
+    control.click();
+    await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  restoredViews.set(doc,serialized);
+}
+
 // Model results are checked in a fresh page without the editor's preview patches.
-export async function verifyAIPage(doc, pending) {
+export async function verifyAIPage(doc, pending, baselineDoc=null) {
   const failures=[];
   for(const patch of Object.values(pending)) {
-    const element=doc.querySelector(patch.ai?.context?.path||patch.selector);
+    try{await restoreAIView(doc,patch.ai?.context);}catch(error){failures.push(patch.selector+'：'+error.message);continue;}
+    const path=patch.ai?.context?.path||patch.selector;
+    let element=doc.querySelector(path);
+    // Positional selectors describe the source order, not the order after a column move.
+    // Resolve anonymous cells through their existing stable child identifiers.
+    const original=baselineDoc?.querySelector(path);
+    if(original?.matches('td,th') && /:nth-(?:of-type|child)\(/.test(path)) {
+      const identities=[...original.querySelectorAll('[id],[data-ve-node]')].map(node=>node.id?`[id=${JSON.stringify(node.id)}]`:`[data-ve-node=${JSON.stringify(node.getAttribute('data-ve-node'))}]`).filter(selector=>baselineDoc.querySelectorAll(selector).length===1);
+      if(identities.length){
+        const matches=identities.map(selector=>{const nodes=doc.querySelectorAll(selector);return nodes.length===1?nodes[0].closest(original.tagName.toLowerCase()):null;});
+        element=matches[0] && matches.every(node=>node===matches[0])?matches[0]:null;
+      }
+    }
     if(patch.deleted){if(element)failures.push(patch.selector+'：组件仍存在');continue;}
     if(!element){failures.push(patch.selector+'：找不到组件');continue;}
     if(patch.insert) {

@@ -71,6 +71,7 @@ export function summarizeDraft(patches={}) {
   const parts=new Set();
   for(const patch of Object.values(patches)) {
     if(patch.insert)parts.add('新增组件');if(patch.deleted)parts.add('删除组件');
+    if(patch.tableColumns?.length)parts.add('删除表格列');
     if(typeof patch.text==='string')parts.add(`修改文字为“${short(patch.text)}”`);
     if(patch.textNodes)parts.add('修改文字');
     if(patch.styles)styleSummary(Object.keys(patch.styles)).forEach(part=>parts.add(part));

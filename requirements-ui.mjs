@@ -226,5 +226,5 @@ export function createRequirementsWorkspace({endpoint,getProject,hasDraft,onSett
   });
   dialog.addEventListener('cancel',event=>{event.preventDefault();closeWorkspace();});
   window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
-  return {async open(){if(!dialog.open)dialog.showModal();await run(async()=>{state=await request('/api/requirements');if(!state.iterations.some(i=>i.id===selected))selected=state.iterations.findLast(i=>i.status==='active')?.id||state.iterations[0]?.id||'';composer=localStorage.getItem(key())||'';formMode=false;editing=false;quizMode='';answerEditor=null;await beginPendingQuestions();},'正在读取已保存内容…');}};
+  return {selectedIterationId:()=>selected,async open(){if(!dialog.open)dialog.showModal();await run(async()=>{state=await request('/api/requirements');if(!state.iterations.some(i=>i.id===selected))selected=state.iterations.findLast(i=>i.status==='active')?.id||state.iterations[0]?.id||'';composer=localStorage.getItem(key())||'';formMode=false;editing=false;quizMode='';answerEditor=null;await beginPendingQuestions();},'正在读取已保存内容…');}};
 }

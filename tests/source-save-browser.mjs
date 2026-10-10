@@ -13,8 +13,8 @@ try{
  const page=await browser.newPage({viewport:{width:1700,height:1050}});page.setDefaultTimeout(6000);
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(`${base}/editor/editor.html?project=${p.id}&entry=index.html`);const f=page.frameLocator('#prototype-frame');await f.locator('#title').waitFor();await page.locator('[data-mode="edit"]').click();
- async function edit(text,selector='#title'){await f.locator(selector).click({modifiers:['Alt']});await page.locator('#prop-text').fill(text);await page.locator('#prop-text').dispatchEvent('change');}
- async function save(){await page.locator('#save-button').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);await f.locator('#title').waitFor();}
+ async function edit(text,selector='#title'){await page.locator('[data-mode="edit"]').click();await f.locator(selector).click({modifiers:['Alt']});await page.locator('#prop-text').fill(text);await page.locator('#prop-text').dispatchEvent('change');}
+ async function save(){await page.evaluate(()=>{window.saveDialogs=[];const original=HTMLDialogElement.prototype.showModal;if(!window.originalShowModal){window.originalShowModal=original;HTMLDialogElement.prototype.showModal=function(){saveDialogs.push(this.id);return original.call(this);};}});await page.locator('#save-button').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open&&!document.querySelector('#save-button').disabled);await f.locator('#title').waitFor();assert.deepEqual(await page.evaluate(()=>saveDialogs),[],'ordinary text saves must not open dialogs');assert.equal(await page.locator('[data-mode="preview"]').getAttribute('class'),'active','successful save returns to preview');await f.locator('body.ve-preview-mode[data-ve-editor-ready="true"]').waitFor();}
  const compileChecks=await page.evaluate(async()=>{
  const {compileSource}=await import('./source-compiler.mjs');
  const source='<html><body><div id="a"><p id="old">old</p></div><div id="b"></div></body></html>';
@@ -53,11 +53,11 @@ try{
  assert.equal(await f.locator('#title').textContent(),'Editor one');
  await edit('Editor two');await writeFile(join(project,'index.html'),html.replace('Editor one','Codex same'));
  await page.locator('#save-button').click();await page.locator('#source-conflicts select').waitFor();
- assert.match(await readFile(join(project,'index.html'),'utf8'),/Codex same/);
- await page.locator('#source-conflicts select').selectOption('code');await page.locator('#source-confirm').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);await f.locator('#title').waitFor();
- assert.equal(await f.locator('#title').textContent(),'Codex same');
+ assert.match(await readFile(join(project,'index.html'),'utf8'),/Codex same/);assert.equal(await page.locator('[data-mode="edit"]').getAttribute('class'),'active','save conflict keeps editing until resolved');
+ await page.locator('#source-conflicts select').selectOption('code');await page.locator('#source-confirm').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open&&!document.querySelector('#save-button').disabled);await f.locator('#title').waitFor();
+ assert.equal(await f.locator('#title').textContent(),'Codex same');assert.equal(await page.locator('[data-mode="preview"]').getAttribute('class'),'active','confirmed conflict save returns to preview');
  await edit('Editor winner');html=await readFile(join(project,'index.html'),'utf8');await writeFile(join(project,'index.html'),html.replace('Codex same','Codex newer'));
- await page.locator('#save-button').click();await page.locator('#source-conflicts select').waitFor();await page.locator('#source-conflicts select').selectOption('editor');await page.locator('#source-confirm').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);assert.match(await readFile(join(project,'index.html'),'utf8'),/Editor winner/);
+ await page.locator('#save-button').click();await page.locator('#source-conflicts select').waitFor();await page.locator('#source-conflicts select').selectOption('editor');await page.locator('#source-confirm').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open&&!document.querySelector('#save-button').disabled);assert.match(await readFile(join(project,'index.html'),'utf8'),/Editor winner/);
  await f.locator('#title').waitFor();await edit('Dynamic edit','#generated');await save();
  assert.match(await readFile(join(project,'index.html'),'utf8'),/Dynamic edit/);
  await page.reload();await f.locator('#generated').waitFor();assert.equal(await f.locator('#generated').textContent(),'Dynamic edit');
@@ -79,7 +79,7 @@ try{
  assert.match(await page.locator('#history-preview-note').textContent(),/Original.*Editor one/,'选中版本也显示改动说明');
  await page.locator('[data-version="original"]').click();await page.waitForFunction(()=>!document.querySelector('#history-restore').disabled);
  const preview=page.frameLocator('#history-preview');assert.equal(await preview.locator('#title').textContent(),'Original');assert.equal(await preview.locator('#title').evaluate(n=>getComputedStyle(n).color),'rgb(255, 0, 0)');
- await page.locator('#history-restore').click();await page.locator('#source-confirm').waitFor();await page.locator('#source-confirm').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);
+ await page.locator('#history-restore').click();await page.locator('#source-confirm').waitFor();await page.locator('#source-confirm').click();await page.waitForFunction(()=>!document.querySelector('#source-dialog').open&&!document.querySelector('#save-button').disabled);
  assert.equal(await readFile(join(project,'index.html'),'utf8'),original);assert.equal(await readFile(join(project,'style.css'),'utf8'),'h1{color:rgb(255,0,0)}');
  await f.locator('body[data-ve-editor-ready="true"]').waitFor();await page.locator('[data-mode="edit"]').click();await edit('Developer handoff');
  const exported=page.waitForEvent('download');
@@ -93,7 +93,7 @@ try{
  const shortcutSaved=page.waitForResponse(response=>response.url().includes('/api/source-save') && response.request().method()==='POST');
  await page.locator('#prop-text').press('Control+s');
  assert.equal((await shortcutSaved).status(),200);
- await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);
+ await page.waitForFunction(()=>!document.querySelector('#source-dialog').open&&!document.querySelector('#save-button').disabled);
  assert.match(await readFile(join(project,'index.html'),'utf8'),/Shortcut saved/);
  assert.deepEqual(errors,[]);console.log('PASS: source write, disjoint merge, conflict choices, runtime persistence, archived CSS/JS preview, full source restore');
 }finally{await browser.close();await new Promise(r=>server.close(r));await rm(temp,{recursive:true,force:true});}

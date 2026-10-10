@@ -45,6 +45,31 @@ try{
   return {cleared,nested};
  });
  assert.deepEqual(textNodeChecks.cleared,[]);assert.equal(textNodeChecks.nested.length,1);
+ const detailChecks=await page.evaluate(async()=>{
+  const {verifyAIPage,trackAIView,captureAIView}=await import('./ai-editor.mjs');
+  const fixture=document.createElement('iframe');document.body.append(fixture);
+  const doc=fixture.contentDocument;
+  doc.body.innerHTML='<button type="button" id="view">查看</button><section id="detail" hidden><p id="value">—</p></section><button type="submit" id="save">保存</button>';
+  let opened=0,saved=0;
+  doc.querySelector('#view').onclick=()=>{opened++;doc.querySelector('#detail').hidden=false;doc.querySelector('#value').textContent='Generated';};
+  doc.querySelector('#save').onclick=()=>saved++;
+  trackAIView(doc,element=>'#'+element.id);
+  doc.querySelector('#view').click();
+  const context=captureAIView(doc.querySelector('#value'));
+  doc.querySelector('#detail').hidden=true;doc.querySelector('#value').textContent='—';
+  const pending={value:{selector:'#value',text:'Generated',ai:{context}}};
+  const valid=await verifyAIPage(doc,pending);
+  const wrong=await verifyAIPage(doc,{value:{...pending.value,text:'Wrong'}});
+  const unsafe=await verifyAIPage(doc,{value:{...pending.value,ai:{context:{viewActions:JSON.stringify([{selector:'#save',label:'保存'}])}}}});
+  const result={context,valid,wrong,unsafe,opened,saved};fixture.remove();return result;
+ });
+ assert.equal(typeof detailChecks.context.viewActions,'string');
+ assert.deepEqual(detailChecks.valid,[],'验证前打开目标详情');
+ assert.equal(detailChecks.opened,2,'通过页面交互生成内容，不能用待办覆盖占位符');
+ assert.equal(detailChecks.wrong.length,1,'错误生成文字仍被拦截');
+ assert.equal(detailChecks.unsafe.length,1,'禁止重放提交或保存动作');
+ assert.equal(detailChecks.saved,0);
+
  async function text(selector,value){await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));await f.locator(selector).click({modifiers:['Alt']});await page.locator('#prop-text').fill(value);await page.locator('#prop-text').dispatchEvent('change');assert.equal(await f.locator(selector).textContent(),value);}
  await text('#title','Direct saved');
  assert.match(await page.locator('#saveability-summary').textContent(),/待 AI 写入：0 项/);
@@ -60,9 +85,9 @@ try{
  const patches=JSON.parse(await readFile(config.editsFile,'utf8')).patches;assert.equal(Object.values(patches).find(v=>v.selector==='#rewritten').text,'AI text');assert.equal(Object.values(patches).find(v=>v.selector==='#rewritten').styles,undefined);
  await page.reload();await f.locator('body[data-ve-editor-ready=true]').waitFor();assert.equal(await f.locator('#rewritten').textContent(),'AI text');assert.equal(await f.locator('#live').textContent(),'AI live');
  modelMode='wrong';await page.locator('#ai-button').click();await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('未通过验证'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
- modelMode='new-error';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('AI regression'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
- modelMode='new-resource';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('missing-ai-image.png'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
- modelMode='good';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('已修改并保存'));
+ modelMode='new-error';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-error-message').textContent.includes('AI regression'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
+ modelMode='new-resource';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-error-message').textContent.includes('missing-ai-image.png'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
+ modelMode='good';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-run-state').dataset.state==='success');
  assert.match(await page.locator('#ai-status').textContent(),/原页面已有/);
  assert.equal(await page.locator('iframe[data-ai-baseline]').count(),0);
  assert.match(task.files['index.html'],/Direct saved/);assert.match(task.files['index.html'],/rgb\(18, 52, 86\)/);

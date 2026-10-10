@@ -18,6 +18,13 @@ export function compileSource({base,current,patches,choices={},projectId,skipUns
     }
   }
   if (unsupported.length && !skipUnsupported) return {conflicts, unsupported};
+  // A table rule must run against the original headings AND every future row.
+  // Keep it in the shared runtime instead of removing only the source headings.
+  for(const [key,patch] of Object.entries(changes))if(patch.tableColumns) {
+    runtimeChanges[key]={selector:patch.selector,tableColumns:patch.tableColumns};
+    delete patch.tableColumns;
+    if(Object.keys(patch).every(field=>['selector','ai'].includes(field)))delete changes[key];
+  }
   const templateChanges=[];
   for(const [key,patch] of Object.entries(changes))if(patch.templateText && 'text' in patch && findTemplateText(doc,null,patch.templateText)){
     templateChanges.push({binding:patch.templateText,text:patch.text});delete patch.text;delete patch.templateText;
@@ -40,7 +47,7 @@ export function compileSource({base,current,patches,choices={},projectId,skipUns
     const introduced=isIntroduced(patch.selector);
     if(!node && !introduced) {
       if(!old) {
-        runtimeChanges[key] = patch;
+        runtimeChanges[key] = {...runtimeChanges[key],...patch};
         delete changes[key];
       }
       else conflict(key,`${patch.selector} 已被代码删除`,old.outerHTML,'组件已删除','无法应用；保留代码会跳过此组件',()=>delete changes[key],true);
@@ -91,7 +98,14 @@ export function compileSource({base,current,patches,choices={},projectId,skipUns
   for (const patch of Object.values(changes)) {
     if (patch.icon) find(doc, patch.selector)?.setAttribute('data-lucide', patch.icon);
   }
-  createVisualPatchEngine(doc).apply(changes);
+  const engine=createVisualPatchEngine(doc);
+  let unsafeMove=false;
+  for(const [key,patch] of Object.entries(changes))if(patch.position) {
+    const reason=engine.moveBlockReason(engine.resolve(patch.selector),engine.resolve(patch.position.parent));
+    if(reason){unsupported.push(`${patch.selector}：${reason}`);if(skipUnsupported)delete changes[key];else unsafeMove=true;}
+  }
+  if(unsafeMove)return {conflicts:[],unsupported};
+  engine.apply(changes);
   writeSourcePatches(doc, mergeSourcePatches(savedRuntime, runtimeChanges));
   doc.querySelectorAll('template[id^="ve-deleted-"]').forEach(node=>node.remove());
   return {html:(doc.doctype?`<!DOCTYPE ${doc.doctype.name}>\n`:'')+doc.documentElement.outerHTML,conflicts:[],unsupported};

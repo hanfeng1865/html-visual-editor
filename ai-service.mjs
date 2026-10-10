@@ -1,5 +1,6 @@
 import {readAIModelResponse} from './ai-stream.mjs';
 import {Agent} from 'undici';
+import {setTimeout as delay} from 'node:timers/promises';
 import {validateAIContext} from './ai-context.mjs';
 import {EDITOR_SOURCE_RULES} from './ai-source-rules.mjs';
 import {readFile,writeFile,mkdir,rename,rm,mkdtemp} from 'node:fs/promises';
@@ -12,6 +13,20 @@ const generationAgent=new Agent();
 // Fetch otherwise supplies its own shorter headers/body deadlines.
 const generationDispatcher={dispatch(options,handler){return generationAgent.dispatch({...options,headersTimeout:generationTimeout,bodyTimeout:generationTimeout},handler);}};
 const run=promisify(execFile),fail=(message,statusCode=400)=>Object.assign(new Error(message),{statusCode});
+function connectionCode(error){
+  return error.cause?.code||error.code||error.cause?.errors?.find(item=>item.code)?.code;
+}
+async function fetchGeneration(endpoint,options,onProgress){
+  for(let attempt=0;;attempt++){
+    options.signal.throwIfAborted();
+    try{return await fetch(endpoint,options);}catch(error){
+      const transient=['UND_ERR_SOCKET','ECONNRESET','EPIPE','UND_ERR_CONNECT_TIMEOUT','ETIMEDOUT','EAI_AGAIN'].includes(connectionCode(error));
+      if(options.signal.aborted||!transient||attempt>=2)throw error;
+      onProgress?.({type:'phase',message:`模型连接暂时中断，正在自动重试（${attempt+1}/2），本次修改尚未写入。`});
+      await delay(500*(attempt+1),undefined,{signal:options.signal});
+    }
+  }
+}
 export function createAIService(editorDir) {
   const configFile=join(editorDir,'.editor-workspaces','ai-config.json'),proposals=new Map();
   const validateConfig=value=>{
@@ -100,12 +115,19 @@ export function createAIService(editorDir) {
     let envelope;
     onProgress?.({type:'phase',message:'已读取最新源码，正在请求模型生成修改。'});
     try {
-      const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${key}`},body:JSON.stringify({model:options.model,...(onProgress?{stream:true}:{}),messages:[{role:'system',content:instruction},{role:'user',content:images.length?[{type:'text',text:JSON.stringify(task)},...images.map(image=>({type:'image_url',image_url:{url:image.url,detail:'high'}}))]:JSON.stringify(task)}]}),dispatcher:generationDispatcher,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(generationTimeout)]):AbortSignal.timeout(generationTimeout),redirect:'error'});
+      const response=await fetchGeneration(endpoint,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${key}`},body:JSON.stringify({model:options.model,...(onProgress?{stream:true}:{}),messages:[{role:'system',content:instruction},{role:'user',content:images.length?[{type:'text',text:JSON.stringify(task)},...images.map(image=>({type:'image_url',image_url:{url:image.url,detail:'high'}}))]:JSON.stringify(task)}]}),dispatcher:generationDispatcher,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(generationTimeout)]):AbortSignal.timeout(generationTimeout),redirect:'error'},onProgress);
       if(!response.ok)throw fail(images.length && [400,415,422].includes(response.status)?`图片请求失败（HTTP ${response.status}），请确认所选模型及接口支持图片输入；也可移除截图后仅发送文字和选区。`:`模型接口请求失败（HTTP ${response.status}），请检查接口、模型及密钥`,502);
       envelope=await readAIModelResponse(response,onProgress);
     }catch(error){
       if(signal?.aborted)throw fail('AI 修改已停止，本次修改未保存',499);
+      if(error.statusCode)throw error;
       if(['TimeoutError','AbortError'].includes(error.name))throw fail('模型生成超时（已等待 20 分钟），本次 AI 修改未保存。请稍后重试，或缩小本次修改范围。',504);
+      const code=connectionCode(error);
+      if(['UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT','ETIMEDOUT'].includes(code))throw fail('连接模型服务超时，本次 AI 修改未保存。请稍后重试，或在 AI 设置中测试连接。',504);
+      if(['UND_ERR_SOCKET','ECONNRESET','EPIPE'].includes(code))throw fail('模型连接中断，未收到完整修改结果，本次 AI 修改未保存。请稍后重试，或在 AI 设置中测试连接。',502);
+      if(['ECONNREFUSED','EHOSTUNREACH','ENETUNREACH'].includes(code))throw fail('无法连接模型服务，本次 AI 修改未保存。请检查接口地址、网络及服务状态。',502);
+      if(['ENOTFOUND','EAI_AGAIN'].includes(code))throw fail('模型接口地址无法解析，本次 AI 修改未保存。请检查接口地址及网络。',502);
+      if(error.message==='fetch failed')throw fail('请求模型服务失败，本次 AI 修改未保存。请在 AI 设置中测试连接，并检查接口地址及网络。',502);
       throw error;
     }
     signal?.throwIfAborted();

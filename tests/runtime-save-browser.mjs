@@ -17,7 +17,7 @@ try {
  async function save() {
    const response=page.waitForResponse(r=>r.url().includes('/api/source-save') && r.request().method()==='POST');
    await page.locator('#save-button').click();assert.equal((await response).status(),200);
-   await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);
+   await page.waitForFunction(()=>!document.querySelector('#source-dialog').open&&!document.querySelector('#save-button').disabled);
    await f.locator('#title').waitFor();
  }
  await f.locator('#generated').click({modifiers:['Alt']});await page.locator('#prop-text').fill('Saved dynamic text');await page.locator('#prop-text').dispatchEvent('change');
@@ -29,15 +29,15 @@ try {
  assert.equal(await f.locator('#generated').textContent(),'Edited again');
  await page.locator('[data-mode="edit"]').click();await f.locator('#generated').click({modifiers:['Alt']});await page.locator('#delete-button').click();
  await save();await page.reload();await f.locator('#title').waitFor();
- assert.equal(await f.locator('#generated').count(),0);
+ assert.equal(await f.locator('#generated').isVisible(),false);
  const standalone=await browser.newPage();await standalone.goto(`file://${join(project,'index.html')}`);
- await standalone.waitForFunction(()=>!document.querySelector('#generated') && document.querySelector('#dynamic template'));
+ await standalone.waitForFunction(()=>document.querySelector('#generated[data-ve-deleted]'));
  await standalone.evaluate(()=>{document.querySelector('#dynamic').innerHTML='<p id="generated">Regenerated</p><p id="sibling">Keep sibling</p>';});
- await standalone.waitForFunction(()=>!document.querySelector('#generated'));
+ await standalone.waitForFunction(()=>document.querySelector('#generated[data-ve-deleted]'));
  assert.equal(await standalone.locator('#sibling').textContent(),'Keep sibling');
  // A further static save must retain the existing runtime deletion.
  await page.locator('[data-mode="edit"]').click();await f.locator('#title').click({modifiers:['Alt']});await page.locator('#prop-text').fill('Static saved');await page.locator('#prop-text').dispatchEvent('change');
- await save();await standalone.reload();await standalone.waitForFunction(()=>!document.querySelector('#generated') && document.querySelector('#dynamic template'));
+ await save();await standalone.reload();await standalone.waitForFunction(()=>document.querySelector('#generated[data-ve-deleted]'));
  assert.equal(await standalone.locator('#title').textContent(),'Static saved');
  console.log('PASS: dynamic edit, second edit, deletion, editor reload, standalone file, re-render and subsequent static save');
 } finally {await browser.close();await new Promise(r=>server.close(r));await rm(temp,{recursive:true,force:true});}

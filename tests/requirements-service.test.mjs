@@ -15,7 +15,7 @@ async function fixture(t,{autoAccept=true}={}){
  const model=createServer(async(req,res)=>{
   let body='';for await(const chunk of req)body+=chunk;
   if(req.url.endsWith('/audio/transcriptions')){calls.push({audio:body});res.setHeader('content-type','application/json');res.end(JSON.stringify({text:'每天 22 点生成快照'}));return;}
-  const parsed=JSON.parse(body),content=parsed.messages[1].content;const task=JSON.parse(typeof content==='string'?content:content[0].text);calls.push(task);
+  const parsed=JSON.parse(body),content=parsed.messages[1].content;const task=JSON.parse(typeof content==='string'?content:content[0].text);calls.push({...task,instruction:parsed.messages[0].content});
   const value=task.request?{edits:[{path:'index.html',before:'<h1 id="title">Old</h1>',after:'<h1 id="title">New</h1>'}],explanation:'修改标题'}:result;
   res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:typeof value==='string'?value:JSON.stringify(value)}}]}));
  });
@@ -32,7 +32,7 @@ async function fixture(t,{autoAccept=true}={}){
  };
  let state=await api('',{action:'create',version:0,name:'测试迭代',scene:'new',scope:'all'});const id=state.iterations[0].id;
  state=await api('',{action:'start',version:state.version,id});
- return {root,original,calls,id,api,get state(){return state;},set result(value){result=value;},async change(action,extra={}){state=await api('',{action,id,version:state.version,...extra});return state;},async chat(message){state=await api('/chat',{id,version:state.version,message});return state;},setState(value){state=value;}};
+ return {root,origin,projectId:opened.id,original,calls,id,api,get state(){return state;},set result(value){result=value;},async change(action,extra={}){state=await api('',{action,id,version:state.version,...extra});return state;},async chat(message){state=await api('/chat',{id,version:state.version,message});return state;},setState(value){state=value;}};
 }
 
 test('requirements routes lifecycle, automatic re-entry, external changes and safe document proposals',async t=>{
@@ -165,4 +165,41 @@ test('changed saved answers prevent accepting an outdated synthesis preview',asy
  c.result={reply:'拟写入CRM',document:'# 来源CRM',questions:[],suggestions:[]};c.setState(await c.api('/chat',{id:c.id,version:c.state.version,syncAnswers:true}));
  const it=c.state.iterations[0],review=it.documentReviews.at(-1),answer=it.extraAnswers[0];assert.ok(answer.needsDocumentSync);await c.change('reviseAnswer',{questionId:answer.id,text:'企业微信'});
  await c.api('',{action:'acceptReview',id:c.id,version:c.state.version,reviewId:review.id},409);const actual=await c.api('');assert.equal(actual.iterations[0].document,'');assert.equal(actual.iterations[0].extraAnswers[0].answer,'企业微信');assert.ok(actual.iterations[0].extraAnswers[0].needsDocumentSync);
+});
+
+
+test('saved PRD explanations feed requirement analysis and interviews, retaining review status and invalidating cache',async t=>{
+ const c=await fixture(t);
+ const prd=async input=>{const res=await fetch(c.origin+'/api/prd-annotations?project='+c.projectId+'&entry=index.html',input?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)}:{});const value=await res.json();assert.equal(res.status,200,JSON.stringify(value));return value;};
+ let notes=await prd({action:'confirm-partitions',blocks:[{id:'refresh-block',selector:'#title',title:'刷新',text:'刷新',fingerprint:{heading:'刷新',path:'#title',signature:'one'},children:[]}]});
+ notes=await prd({...notes,points:[{id:'refresh-note',blockId:'refresh-block',type:'rule',title:'刷新频率',content:'每 5 分钟刷新一次。',source:'visible',status:'confirmed',manual:true,children:[{id:'refresh-child',blockId:'refresh-block',type:'boundary',title:'失败处理',content:'刷新失败后是否保留旧数据待确认。',source:'unconfirmed',status:'draft'}]}]});
+ await c.chat('');const knowledge=c.calls.at(-1).prdAnnotations['index.html'];assert.equal(knowledge.notes[0].content,'每 5 分钟刷新一次。');assert.equal(knowledge.notes[0].status,'confirmed');assert.equal(knowledge.notes[1].parentId,'refresh-note');assert.equal(knowledge.notes[1].status,'draft');assert.equal(knowledge.notes[1].hasOpenQuestions,true);
+ const count=c.calls.length;await c.chat('');assert.equal(c.calls.length,count,'unchanged evidence should not call the model again');
+ notes.points[0].content='每 10 分钟刷新一次。';notes=await prd(notes);await c.chat('');assert.equal(c.calls.length,count+1);assert.equal(c.calls.at(-1).prdAnnotations['index.html'].notes[0].content,'每 10 分钟刷新一次。');assert.deepEqual(c.calls.at(-1).changedFiles,[],'annotation updates do not mutate the prototype');
+ c.result={questions:[{text:'失败后如何处理？',options:[]}]};await c.api('/interview',{id:c.id,version:c.state.version,count:1,optionCount:0});assert.equal(c.calls.at(-1).prdAnnotations['index.html'].notes[0].content,'每 10 分钟刷新一次。');
+});
+
+test('product interview excludes content approvals and staffing from generated and reloaded queues',async t=>{
+ const c=await fixture(t);
+ c.result={reply:'请确认统计口径。',questions:['首页主视觉：品牌名称和标语的权威内容依据是什么？','资源：本次迭代可投入的预算是多少？','统计是否按用户去重？'],suggestions:[]};
+ await c.chat('核对功能规则');
+ assert.deepEqual(c.state.iterations[0].questions,['统计是否按用户去重？']);
+ const reloaded=await c.api('');assert.deepEqual(reloaded.iterations[0].questions,['统计是否按用户去重？']);
+ assert.equal(reloaded.iterations[0].excludedQuestions.length,2);
+ await c.change('pendingQuestions');
+ assert.deepEqual(c.state.iterations[0].interviews.at(-1).questions.map(q=>q.text),['统计是否按用户去重？']);
+});
+
+
+test('saved generation skill reaches requirements and interview models and invalidates cached analysis',async t=>{
+ const c=await fixture(t);
+ const url=c.origin+'/api/generation-skills';
+ const initial=await fetch(url).then(r=>r.json());assert.ok(initial.skills,'skills management API must exist');
+ const current=initial.skills.find(s=>s.id==='requirements');
+ const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:current.id,revision:current.revision,content:current.content+'\nCUSTOM_RULE_100: 只按用户任务验收。\n'})});assert.equal(response.status,200);const saved=await response.json();
+ await c.chat('');assert.match(c.calls.at(-1).instruction,/CUSTOM_RULE_100/);assert.equal(c.calls.at(-1).skill.revision,saved.revision);
+ const count=c.calls.length;await c.chat('');assert.equal(c.calls.length,count);
+ const updated=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:current.id,revision:saved.revision,content:saved.content+'\nCUSTOM_RULE_200: 写明输入和结果。\n'})}).then(r=>r.json());
+ await c.chat('');assert.equal(c.calls.length,count+1);assert.match(c.calls.at(-1).instruction,/CUSTOM_RULE_200/);assert.equal(c.calls.at(-1).skill.revision,updated.revision);
+ c.result={questions:[{text:'具体业务决策？',options:[],hint:'影响规则'}]};await c.api('/interview',{id:c.id,version:c.state.version,count:1,optionCount:0});assert.match(c.calls.at(-1).instruction,/CUSTOM_RULE_200/);
 });

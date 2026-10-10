@@ -12,7 +12,7 @@ const historyDir=project=>join(dirname(project.editsFile),'.source-history');
 async function atomic(path,value){await mkdir(dirname(path),{recursive:true});const temp=`${path}.${randomUUID()}.tmp`;await writeFile(temp,value);try{await rename(temp,path);}finally{await unlink(temp).catch(()=>{});}}
 export async function readSourceState(project,editorDir) {
   const files={};let bytes=0;
-  const add=async entry=>{const path=await insideProject(project.root,entry);const value=await readFile(path,'utf8');bytes+=Buffer.byteLength(value);if(bytes>20*1024*1024)throw fail('源码超过 20MB，请选择更具体的项目目录',413);files[entry]=value;};
+  const add=async entry=>{const path=await insideProject(project.root,entry);const value=await readFile(path,'utf8');bytes+=Buffer.byteLength(value);if(bytes>100*1024*1024)throw fail('源码超过 100MB，请选择更具体的项目目录',413);files[entry]=value;};
   await add(project.entry);
   async function walk(folder='') {
     for(const item of await readdir(join(project.root,folder),{withFileTypes:true})) {

@@ -1,3 +1,4 @@
+import {pruneNonProductQuestions} from './requirements-question-policy.mjs';
 import {readFile,writeFile,mkdir,rename} from 'node:fs/promises';
 import {join,resolve,dirname} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -104,7 +105,7 @@ export function createRequirementsStore(editorDir,{snapshot}={}){
   if(typeof snapshot!=='function')throw new Error('snapshot callback required');
   const path=project=>join(resolve(editorDir),'.editor-workspaces','requirements',createHash('sha256').update(resolve(project.root)).digest('hex'),'state.json');
   async function readFull(project){
-    try{return JSON.parse(await readFile(path(project),'utf8'));}catch(error){if(error.code==='ENOENT')return {version:0,iterations:[]};throw error;}
+    try{return pruneNonProductQuestions(JSON.parse(await readFile(path(project),'utf8')));}catch(error){if(error.code==='ENOENT')return {version:0,iterations:[]};throw error;}
   }
   async function read(project){return publicState(await readFull(project));}
   async function apply(project,input){
@@ -280,7 +281,7 @@ export function createRequirementsStore(editorDir,{snapshot}={}){
     }
     state.version++;
     const file=path(project);await mkdir(dirname(file),{recursive:true});const temp=`${file}.${randomUUID()}.tmp`;
-    await writeFile(temp,JSON.stringify(state));await rename(temp,file);return publicState(state);
+    pruneNonProductQuestions(state);await writeFile(temp,JSON.stringify(state));await rename(temp,file);return publicState(state);
   }
   function mutate(project,input){
     const file=path(project);const task=(queues.get(file)??Promise.resolve()).catch(()=>{}).then(()=>apply(project,input));

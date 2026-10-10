@@ -26,6 +26,13 @@ test('column span adjustments persist but arbitrary HTML attributes are rejected
   assert.throws(()=>validateVisualEdits({version:1,patches:{bad:{selector:'#bad',attributes:{onclick:'alert(1)'}}}}),/属性/);
 });
 
+test('table column rules persist and reject invalid or duplicate column indices', () => {
+  const patch={selector:'#table',tableColumns:[{index:1,width:120}]};
+  assert.doesNotThrow(()=>validateVisualEdits({version:1,patches:{table:patch}}));
+  for(const tableColumns of [[{index:-1,width:10}],[{index:1,width:-10}],[{index:1,width:10},{index:1,width:10}],{}])
+    assert.throws(()=>validateVisualEdits({version:1,patches:{table:{...patch,tableColumns}}}));
+});
+
 test('input value attributes can be saved without permitting executable attributes', () => {
   assert.doesNotThrow(()=>validateVisualEdits({version:1,patches:{input:{selector:'#input',attributes:{value:'输入内容',placeholder:'请输入客户名称'}}}}));
   assert.throws(()=>validateVisualEdits({version:1,patches:{input:{selector:'#input',attributes:{oninput:'alert(1)'}}}}),/属性/);

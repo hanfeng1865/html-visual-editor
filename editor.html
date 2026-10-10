@@ -20,7 +20,6 @@
       </div>
       <div class="toolbar-group viewport-switch" aria-label="画布尺寸">
         <button class="active" type="button" data-viewport="desktop" title="桌面">桌面</button>
-        <button type="button" data-viewport="tablet" title="平板">平板</button>
         <button type="button" data-viewport="mobile" title="手机">手机</button>
       </div>
       <div class="toolbar-actions">
@@ -29,6 +28,10 @@
         <button id="reload-button" type="button" title="重新读取当前 HTML 与本地资源">刷新代码</button>
         <button id="editor-changes-toggle" type="button" aria-pressed="false" title="显示或隐藏手动框选的标记">显示手动标记</button>
         <button id="editor-box-toggle" type="button" aria-pressed="false" title="在当前画布拖动框选并保存手动改动点">框选标记</button>
+        <button id="prd-generate-button" type="button" title="依据当前需求文档，为可见控件生成交互、字段、规则和边界说明">AI 一键标注</button>
+        <button id="prd-toggle-button" type="button" aria-pressed="true">隐藏 PRD 标注</button>
+        <button id="prd-list-button" type="button">PRD 标注说明</button>
+        <button id="generation-skills-button" type="button" title="维护需求文档和 PRD 标注的生成规范">Skill 管理</button>
         <button id="ai-button" type="button">AI 待办</button>
         <button id="save-button" class="primary" type="button" title="写入项目中的本地 HTML 文件（⌘/Ctrl+S），未完成的 AI 待办不算源码已保存">保存到项目</button>
         <button id="view-first-button" type="button">查看初版</button>
@@ -137,24 +140,27 @@
     </header>
     <div id="ai-run-state" class="ai-run-state" hidden data-state="idle">
       <div class="ai-run-line"><span id="ai-run-icon" class="ai-run-icon" aria-hidden="true"></span><strong id="ai-run-title"></strong><span id="ai-run-elapsed" aria-hidden="true"></span></div>
+      <p id="ai-run-task" class="ai-run-task" aria-label="当前任务"></p>
       <p id="ai-run-detail" role="status" aria-live="polite"></p>
+      <details id="ai-error-details" hidden><summary>查看失败详情</summary><pre id="ai-error-message"></pre></details>
       <button id="ai-stop" type="button" hidden>停止 AI 修改</button>
       <ol class="ai-run-steps" aria-label="AI 修改流程"><li data-phase="generate"><span class="ai-run-segment" aria-hidden="true"></span><span class="ai-run-step-label">生成修改</span></li><li data-phase="verify"><span class="ai-run-segment" aria-hidden="true"></span><span class="ai-run-step-label">检查效果</span></li><li data-phase="save"><span class="ai-run-segment" aria-hidden="true"></span><span class="ai-run-step-label">保存源码</span></li></ol>
     </div>
     <div class="ai-body">
       <div class="ai-overview"><span aria-hidden="true">✓</span><p>普通修改先保存，AI 按你的要求修改最新源码。<br><small>AI 自动检查、备份并保存，完成后刷新主界面。</small></p></div>
       <section class="ai-chat-panel" aria-label="对话修改界面">
-        <details id="ai-process" class="ai-process" hidden><summary>实时处理过程 <span id="ai-stream-received"></span></summary><div class="ai-process-content"><p id="ai-live-summary"></p><ol id="ai-process-log"></ol></div></details>
+        <details id="ai-process" class="ai-process" hidden><summary>实时处理过程 <span id="ai-stream-received"></span></summary><div class="ai-process-content"><p id="ai-live-summary"></p></div></details>
+        <div class="ai-composer">
         <label class="ai-chat-label" for="ai-chat-input">想修改哪里？</label>
-        <textarea id="ai-chat-input" rows="5" maxlength="12000" placeholder="例如：把顶部指标卡改成两列，金额字号加大。
-
-可以引用画布区域，或粘贴截图说明。"></textarea>
+        <textarea id="ai-chat-input" rows="4" maxlength="12000" placeholder="描述你想修改的内容…"></textarea>
         <div id="ai-selection-context" class="ai-selection-context" hidden><span id="ai-selection-summary"></span><button id="ai-selection-clear" type="button" aria-label="移除选区引用">×</button></div>
         <div id="ai-images" class="ai-images" aria-label="本次截图附件" hidden></div>
-        <div class="ai-attachment-tools"><button id="ai-attach-selection" class="ai-secondary" type="button" title="将画布中选中的元素交给 AI">引用选中元素</button><button id="ai-attach-region" class="ai-secondary" type="button" aria-pressed="false" title="在画布中拖动选择要修改的区域">框选区域</button><button id="ai-image-upload" class="ai-secondary" type="button" title="上传图片，也可以直接粘贴到输入框">上传图片</button><input id="ai-image-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden></div>
-        <div class="ai-chat-controls"><span>⌘ / Ctrl + Enter</span><button id="ai-chat-send" class="ai-primary" type="button" disabled>发送并修改 ↑</button></div>
+        <div class="ai-attachment-tools"><button id="ai-attach-selection" class="ai-secondary" type="button" title="将画布中选中的元素交给 AI">引用选中元素</button><button id="ai-attach-region" class="ai-secondary" type="button" aria-pressed="false" title="在画布中拖动选择要修改的区域">框选区域</button><button id="ai-image-upload" class="ai-secondary" type="button" title="上传图片，也可以直接粘贴到输入框">上传图片</button><button id="ai-sketch-open" class="ai-secondary" type="button" title="画一张草图来说明修改需求">手绘</button><input id="ai-image-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden></div>
+        <div class="ai-chat-controls"><span>⌘ / Ctrl + Enter</span><button id="ai-chat-steer" class="ai-secondary" type="button" hidden title="保留当前目标，合并补充要求一起调整">立即调整</button><button id="ai-chat-send" class="ai-primary" type="button" disabled>发送并修改 ↑</button></div>
+        </div>
+        <section id="ai-task-queue" aria-label="等待执行的任务" hidden><p id="ai-task-queue-status" role="status"></p><ol id="ai-task-list"></ol><button id="ai-task-resume" class="ai-secondary" type="button" hidden>继续队列</button><small>立即执行会合并到当前任务 · 刷新会清空队列。</small></section>
       </section>
-      <details class="ai-compose-help"><summary>使用提示</summary><p>先引用选中元素或框选区域，再描述修改要求。截图可上传或粘贴到输入框，最多 3 张，需要支持图片的模型。</p><p>AI 会遵守本编辑器的兼容要求，保留稳定标识，生成方便后续编辑和保存的静态源码。完成后自动备份、保存并刷新画布。</p></details>
+      <details class="ai-compose-help"><summary>使用提示</summary><p>先引用选中元素或框选区域，再描述修改要求。截图可上传、粘贴或通过手绘添加，最多 3 张，需要支持图片的模型。</p><p>AI 会遵守本编辑器的兼容要求，保留稳定标识，生成方便后续编辑和保存的静态源码。完成后自动备份、保存并刷新画布。</p></details>
       <details id="ai-chat-history" class="ai-chat-history" hidden><summary>历史对话</summary><div id="ai-chat-log" class="ai-chat-log" role="log" aria-label="当前页面的 AI 对话记录" aria-live="polite" hidden></div></details>
       <div class="ai-columns">
         <section class="ai-config-panel">
@@ -202,6 +208,7 @@
           <span id="save-status">浏览器草稿自动保存 · 点击“保存到项目”持久化</span>
         </div>
         <div id="source-change-banner" hidden>检测到外部代码修改。草稿已保留，保存时会检查冲突。<button id="source-refresh" type="button">载入最新代码</button></div>
+        <div id="interaction-issue" hidden role="alert"><span id="interaction-issue-text"></span><button id="interaction-recover" type="button">撤销最近修改</button><button id="interaction-history" type="button">查看历史版本</button><button id="interaction-dismiss" type="button">收起提示</button></div>
         <div class="canvas-controls">
           <span id="canvas-dimensions">桌面 · 1440 × 900</span>
           <label for="canvas-zoom">缩放</label>
@@ -221,6 +228,7 @@
         <div class="canvas-frame desktop" id="canvas-frame">
           <iframe id="prototype-frame" src="about:blank" title="当前 HTML 页面"></iframe>
         </div></div></div>
+        <aside id="prd-sidebar" class="prd-sidebar" hidden aria-label="PRD 标注说明"></aside>
         <svg id="annotation-connectors" class="annotation-connectors" aria-hidden="true"></svg>
         <aside id="annotation-rail" class="annotation-rail" hidden aria-label="逻辑说明">
           <div class="annotation-rail-head"><div><strong>逻辑说明</strong><span>框选标记与右侧说明对应</span></div><span id="annotation-count"></span></div>
@@ -396,6 +404,18 @@
       <p id="project-open-status" role="status"></p>
       <div class="project-dialog-actions"><button type="submit" id="confirm-open-project">关联并打开</button></div>
     </form>
+  </dialog>
+  <dialog id="generation-skills-dialog" aria-labelledby="generation-skills-heading">
+    <div class="project-dialog-head"><div><h2 id="generation-skills-heading">生成 Skill 管理</h2><p>维护 AI 生成需求文档和 PRD 标注的规范。本机所有项目共用，保存后下次生成自动应用。</p></div><button id="generation-skills-close" type="button" aria-label="关闭 Skill 管理">×</button></div>
+    <div class="generation-skills-layout">
+      <nav id="generation-skills-list" aria-label="生成 Skill 列表"></nav>
+      <section class="generation-skill-editor"><h3 id="generation-skill-title">生成规范</h3><p id="generation-skill-meta"></p>
+        <label for="generation-skill-content">规范内容（Markdown）</label><textarea id="generation-skill-content" spellcheck="false" placeholder="写清需要遵守的范围、依据、提问边界、文档结构和验收要求"></textarea>
+        <div class="generation-skill-tools"><select id="generation-skill-history" aria-label="Skill 历史版本"><option value="">查看历史版本（加载为草稿）</option></select><button id="generation-skill-reset" type="button">恢复默认草稿</button></div>
+        <p id="generation-skill-status" role="status"></p>
+        <div class="generation-skill-footer"><span>保存保留最近 20 个历史版本。已有生成结果需重新生成并审核。</span><button id="generation-skill-save" type="button" class="primary" disabled>保存并应用</button></div>
+      </section>
+    </div>
   </dialog>
   <div class="toast" id="toast" role="status"></div>
   <script type="module" src="editor.js?v=27"></script>

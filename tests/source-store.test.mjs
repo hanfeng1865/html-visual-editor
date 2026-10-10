@@ -1,6 +1,19 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';import {join} from 'node:path';import {tmpdir} from 'node:os';
 import {ensureSourceOrigin,saveSource,restoreSource,readSourceState,listSourceVersions,readSourceVersion} from '../source-store.mjs';
+test('source reads accept 100MB total and reject larger projects',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'source-limit-'));
+ const p={root,entry:'index.html',editsFile:join(root,'.visual-editor','page','visual-edits.json')};
+ try{
+  const html='<h1>Large project</h1>';
+  await writeFile(join(root,'index.html'),html);
+  await writeFile(join(root,'app.js'),' '.repeat(100*1024*1024-Buffer.byteLength(html)));
+  const state=await readSourceState(p,join(root,'editor'));
+  assert.equal(Buffer.byteLength(state.source)+Buffer.byteLength(state.files['app.js']),100*1024*1024);
+  await writeFile(join(root,'extra.css'),'x');
+  await assert.rejects(readSourceState(p,join(root,'editor')),error=>error.statusCode===413 && /100MB/.test(error.message));
+ }finally{await rm(root,{recursive:true,force:true});}
+});
 test('source saves reject stale writes, preserve backups, and restore HTML/CSS/JS with draft',async()=>{
  const root=await mkdtemp(join(tmpdir(),'source-store-'));
  const p={root,entry:'index.html',editsFile:join(root,'.visual-editor','page','visual-edits.json'),backupDir:join(root,'.visual-editor','page','backups')};

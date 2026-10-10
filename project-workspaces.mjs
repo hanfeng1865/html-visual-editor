@@ -154,7 +154,7 @@ export function zipFiles(files) {
   const directory = Buffer.concat(central), end = Buffer.alloc(22);end.writeUInt32LE(0x06054b50, 0);end.writeUInt16LE(files.length, 8);end.writeUInt16LE(files.length, 10);end.writeUInt32LE(directory.length, 12);end.writeUInt32LE(offset, 16);
   return Buffer.concat([...parts, directory, end]);
 }
-export async function exportProjectFiles(manager, id, entry, currentPatches, {sourceOnly=false} = {}) {
+export async function exportProjectFiles(manager, id, entry, currentPatches, {sourceOnly=false,includeFile=()=>true} = {}) {
   const project = await manager.describe(id, entry), files = [];let size = 0;
   if(sourceOnly && Object.keys(currentPatches || {}).length)throw error(`${entry} 仍有未写入源码的修改，请先保存并完成 AI 待办`,409);
   async function walk(folder = '') {
@@ -162,6 +162,7 @@ export async function exportProjectFiles(manager, id, entry, currentPatches, {so
       if (ignored(item.name) || item.isSymbolicLink()) continue;
       const path = folder ? `${folder}/${item.name}` : item.name;
       if (item.isDirectory()) { await walk(path); continue; }
+      if (!includeFile(path)) continue;
       const absolute = await insideProject(project.root, path);
       const info = await stat(absolute); size += info.size;
       if (size > 200 * 1024 * 1024 || files.length >= 10000) throw error('项目超过导出限制（200MB 或 10000 个文件），请选择更具体的目录');

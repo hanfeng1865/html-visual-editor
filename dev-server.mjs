@@ -1,4 +1,8 @@
-import {createLanShareService} from './lan-share.mjs';
+import {createGenerationSkills} from './generation-skills.mjs';
+import {checkProjectInteractions} from './interaction-check.mjs';
+import {createHash} from 'node:crypto';
+import {createPRDAnnotationsService} from './prd-annotations-service.mjs';
+import {createLanShareService,isShareableFile} from './lan-share.mjs';
 import {createAIService} from './ai-service.mjs';
 import {createRequirementsService} from './requirements-service.mjs';
 import {installAIErrorMonitor} from './ai-editor.mjs';
@@ -64,10 +68,17 @@ try {
 
 export function createDevServer({ rootDir = configuration.prototypeRoot || editorDirectory, editorDir = editorDirectory } = {}) {
   const ai=createAIService(editorDir);
-  const sharing=createLanShareService({mimeTypes,stateFile:join(editorDir,'.editor-workspaces','lan-shares.json')});
   const projectRoot = resolve(rootDir);
   const workspaces = createWorkspaceManager(projectRoot, { registryDir: join(editorDir, '.editor-workspaces') });
-  const requirements=createRequirementsService(editorDir,{ai,workspaces});
+  const skills=createGenerationSkills(editorDir);
+  const requirements=createRequirementsService(editorDir,{ai,workspaces,skills});
+  const prd=createPRDAnnotationsService({ai,requirements,skills});
+  const sharing=createLanShareService({mimeTypes,stateFile:join(editorDir,'.editor-workspaces','lan-shares.json'),readPRD:async(share,path)=>{
+    const id=share.key.slice(0,share.key.indexOf(':'));
+    const pageKey=createHash('sha256').update(path).digest('hex').slice(0,20);
+    const annotationsFile=id==='builtin'?join(projectRoot,'change-annotations.json'):join(share.root,'.visual-editor',pageKey,'change-annotations.json');
+    return prd.read({annotationsFile});
+  }});
 
   const server=createServer(async (request, response) => {
     try {
@@ -80,6 +91,11 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
       if (request.method === 'POST') {
         if (request.headers.origin && request.headers.origin !== `http://${request.headers.host}`) return json(response, 403, { error:'仅允许本地编辑器发起操作' });
         if (!(request.headers['content-type'] || '').startsWith('application/json')) return json(response, 415, { error:'需要 JSON 请求' });
+      }
+      if(url.pathname==='/api/generation-skills'){
+        if(request.method==='GET')return json(response,200,await skills.list());
+        if(request.method==='POST')return json(response,200,await skills.save(await readJsonBody(request,200*1024)));
+        return json(response,405,{error:'不支持此操作'});
       }
       if(url.pathname==='/api/ai/models' && request.method==='POST')return json(response,200,await ai.listModels(await readJsonBody(request)));
       if(url.pathname==='/api/ai/test' && request.method==='POST')return json(response,200,await ai.testConnection(await readJsonBody(request)));
@@ -135,6 +151,14 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
         return json(response, 200, folder ? await workspaces.open(folder) : { cancelled:true });
       }
       if (url.pathname === '/api/projects/current' && request.method === 'GET') return json(response, 200, await workspaces.describe(workspaceId, entry));
+      if(url.pathname==='/api/prd-annotations'||url.pathname==='/api/prd-annotations/generate') {
+        const project=await workspaces.describe(workspaceId,entry);
+        if(request.method==='GET'&&url.pathname==='/api/prd-annotations')return json(response,200,await prd.read(project));
+        if(request.method!=='POST')return json(response,405,{error:'不支持此操作'});
+        const body=await readJsonBody(request,2*1024*1024);
+        if(!body||typeof body!=='object'||Array.isArray(body))return json(response,400,{error:'标注请求无效'});
+        return json(response,200,await prd[url.pathname.endsWith('/generate')?'generate':'save'](project,body));
+      }
       if(url.pathname==='/api/requirements'||url.pathname.startsWith('/api/requirements/')) {
         const project=await workspaces.describe(workspaceId,entry);
         if(request.method==='GET'&&url.pathname==='/api/requirements')return json(response,200,await requirements.read(project));
@@ -144,6 +168,16 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
         const operation={'/api/requirements':'change','/api/requirements/chat':'chat','/api/requirements/interview':'interview','/api/requirements/transcribe':'transcribe','/api/requirements/sync':'sync'}[url.pathname];
         if(!operation)return json(response,404,{error:'需求接口不存在'});
         return json(response,200,await requirements[operation](project,body));
+      }
+      if(url.pathname==='/api/source-check' && request.method==='POST') {
+        const project=await workspaces.describe(workspaceId,entry);
+        const body=await readJsonBody(request,25*1024*1024);
+        const current=await readSourceState(project,editorDir);
+        if(body.revision!==current.revision)return json(response,409,{error:'源码已变化，请重新检查后保存'});
+        const proposal=body.proposalId?ai.proposal(body.proposalId,project):null;
+        if(proposal && proposal.revision!==current.revision)return json(response,409,{error:'AI 预览对应的源码已变化，请重新生成'});
+        const result=await checkProjectInteractions({root:project.root,entry:current.entry,source:current.source,html:proposal?proposal.allFiles[current.entry]:body.html,originalFiles:proposal?.originalFiles,files:proposal?.allFiles});
+        return json(response,200,result);
       }
       if(['/api/source-state','/api/source-save','/api/source-history'].includes(url.pathname)) {
         const project=await workspaces.describe(workspaceId,entry);
@@ -174,7 +208,7 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
         if(workspaceId==='builtin') {
           if(typeof body.html!=='string' || !body.html.trim())return json(response,400,{error:'请先生成分享页面'});
           files=[['index.html',Buffer.from(body.html)]];
-        }else files=await exportProjectFiles(workspaces,workspaceId,entry,{}, {sourceOnly:true});
+        }else files=await exportProjectFiles(workspaces,workspaceId,entry,{}, {sourceOnly:true,includeFile:path=>isShareableFile(path,mimeTypes)});
         return json(response,200,await sharing.create(key,workspaceId==='builtin'?'index.html':project.entry,files,{...(workspaceId==='builtin'?{}:{root:project.root}),viewportWidth:body.viewportWidth ?? 1440}));
       }
       if (url.pathname === '/api/projects/export' && request.method === 'POST') {

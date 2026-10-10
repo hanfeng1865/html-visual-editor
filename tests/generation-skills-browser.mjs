@@ -1,0 +1,32 @@
+import {chromium} from 'playwright';
+import {mkdtemp,mkdir,cp,writeFile,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {fileURLToPath} from 'node:url';
+import assert from 'node:assert/strict';
+import {createDevServer} from '../dev-server.mjs';
+const temp=await mkdtemp(join(tmpdir(),'skills-browser-')),editor=join(temp,'editor'),root=join(temp,'project');
+await mkdir(root);await cp(new URL('../',import.meta.url),editor,{recursive:true,filter:path=>!['.git','node_modules','.editor-workspaces','editor-config.json','output','.visual-editor'].includes(path.split(/[\\/]/).pop())});
+await writeFile(join(root,'index.html'),'<html><head></head><body><h1>原型</h1></body></html>');
+const server=createDevServer({rootDir:root,editorDir:editor});await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
+const browser=await chromium.launch();
+try{
+ const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const project=await fetch(base+'/api/projects/open',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:root})}).then(r=>r.json());
+ await page.goto(base+'/editor/editor.html?project='+project.id+'&entry=index.html');await page.getByRole('button',{name:'Skill 管理',exact:true}).click();
+ const dialog=page.getByRole('dialog',{name:'生成 Skill 管理'}),content=dialog.getByLabel('规范内容（Markdown）');await content.waitFor();
+ await page.waitForFunction(()=>document.getElementById('generation-skill-content').value.includes('需求文档生成规范'));
+ const original=await content.inputValue();await content.fill(original+'\nUI_CUSTOM_RULE: 按用户任务验收。');
+ await dialog.locator('.generation-skill-choice').filter({hasText:'PRD 标注说明'}).click();assert.match(await content.inputValue(),/PRD 标注说明规范/);
+ await dialog.locator('.generation-skill-choice').filter({hasText:'需求文档'}).click();assert.match(await content.inputValue(),/UI_CUSTOM_RULE/);
+ await dialog.getByRole('button',{name:'保存并应用'}).click();await dialog.getByRole('status').filter({hasText:'已保存；下次生成'}).waitFor();
+ const state=await fetch(base+'/api/generation-skills').then(r=>r.json());assert.match(state.skills.find(s=>s.id==='requirements').content,/UI_CUSTOM_RULE/);assert.doesNotMatch(state.skills.find(s=>s.id==='prd-annotations').content,/UI_CUSTOM_RULE/);
+ await page.getByRole('button',{name:'关闭 Skill 管理'}).click();await page.reload();await page.getByRole('button',{name:'Skill 管理',exact:true}).click();await page.waitForFunction(()=>document.getElementById('generation-skill-content').value.includes('UI_CUSTOM_RULE'));
+ await dialog.getByLabel('Skill 历史版本').selectOption('0');assert.equal(await content.inputValue(),original);assert.equal(await dialog.getByRole('button',{name:'保存并应用'}).isEnabled(),true);
+ await content.fill('');await dialog.getByRole('button',{name:'保存并应用'}).click();await dialog.getByRole('status').filter({hasText:'正文不能为空'}).waitFor();assert.equal(await content.inputValue(),'');
+ await dialog.getByRole('button',{name:'恢复默认草稿'}).click();assert.equal(await content.inputValue(),original);
+ await dialog.getByRole('button',{name:'保存并应用'}).click();await dialog.getByRole('status').filter({hasText:'已保存；下次生成'}).waitFor();
+ await page.setViewportSize({width:600,height:850});assert.ok(await dialog.evaluate(el=>el.getBoundingClientRect().width<=600));assert.ok(await content.evaluate(el=>el.getBoundingClientRect().right<=600));
+ await page.setViewportSize({width:1440,height:1000});await mkdir(new URL('../output/generation-skills/',import.meta.url),{recursive:true});await page.screenshot({path:fileURLToPath(new URL('../output/generation-skills/manager.png',import.meta.url))});
+ assert.deepEqual(errors,[]);console.log('Skill manager: edit, switch draft, persistence, history, validation, default restore and narrow viewport passed');
+}finally{await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(temp,{recursive:true,force:true});}

@@ -77,7 +77,7 @@ try {
   await page.locator('#prop-text').fill('Saved static');await page.locator('#prop-text').dispatchEvent('change');
   const saved=page.waitForResponse(response=>response.url().includes('/api/source-save') && response.request().method()==='POST');
   await page.locator('#save-button').click();assert.equal((await saved).status(),200);
-  await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);
+  await page.waitForFunction(()=>!document.querySelector('#source-dialog').open&&!document.querySelector('#save-button').disabled);
   await page.locator('#ai-dialog[open]').waitFor();await page.locator('#ai-close').click();
   const html=await readFile(join(project,'index.html'),'utf8');
   assert.match(html,/Saved static/);assert.match(html,/Saved runtime/);assert.match(html,/AI unstable/);assert.doesNotMatch(html,/AI rewritten/);
@@ -88,7 +88,7 @@ try {
   await page.locator('#export-menu-button').click();await page.locator('#export-html-button').click();
   await page.locator('#ai-dialog[open]').waitFor();
   assert.equal(exports,0);assert.equal(downloads,0);
-  assert.match(await page.locator('#save-status').textContent(),/未写入源码.*暂不可交付/);
+  assert.match(await page.locator('#save-status').textContent(),/部分修改已保存.*等待 AI 写回/);
   await page.locator('#ai-close').click();
   assert.equal(await f.locator('#generated').textContent(),'Saved runtime');
   assert.equal(await f.locator('.unstable').textContent(),'AI unstable');
@@ -113,7 +113,7 @@ try {
   assert.equal(await f.locator('#title').evaluate(el=>el.isContentEditable),false,'回车结束编辑');
   const inlineSaved=page.waitForResponse(response=>response.url().includes('/api/source-save') && response.request().method()==='POST');
   await page.locator('#save-button').click();assert.equal((await inlineSaved).status(),200);
-  await page.waitForFunction(()=>!document.querySelector('#source-dialog').open);
+  await page.waitForFunction(()=>!document.querySelector('#source-dialog').open&&!document.querySelector('#save-button').disabled);
   assert.match(await readFile(join(project,'index.html'),'utf8'),/Inline edit/);
   const checks=await page.evaluate(async()=>{
     const {createSaveabilityChecker}=await import('./saveability.mjs');

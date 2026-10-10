@@ -1,5 +1,7 @@
+import {createAISketch} from './ai-sketch.mjs';
 export function createAIAttachments({getSelected,getDocument,contextFor,onChange,onError,onRegionStart}) {
   const input=document.getElementById('ai-chat-input'),file=document.getElementById('ai-image-file'),upload=document.getElementById('ai-image-upload'),list=document.getElementById('ai-images');
+  const sketchButton=document.getElementById('ai-sketch-open');
   const selectedButton=document.getElementById('ai-attach-selection'),regionButton=document.getElementById('ai-attach-region'),selectionBox=document.getElementById('ai-selection-context'),summary=document.getElementById('ai-selection-summary'),clearSelection=document.getElementById('ai-selection-clear');
   let images=[],selection=null,busy=false,reading=0,cancelRegion=null;
   function render(){
@@ -7,7 +9,7 @@ export function createAIAttachments({getSelected,getDocument,contextFor,onChange
     images.forEach((image,index)=>{const card=document.createElement('figure'),preview=document.createElement('img'),name=document.createElement('figcaption'),remove=document.createElement('button');preview.src=image.url;preview.alt=image.name;name.textContent=image.name;remove.type='button';remove.textContent='×';remove.title='移除截图';remove.setAttribute('aria-label','移除截图 '+image.name);remove.disabled=busy;remove.onclick=()=>{images.splice(index,1);render();onChange();};card.append(preview,name,remove);list.append(card);});
     selectionBox.hidden=!selection;
     if(selection)summary.textContent=(selection.kind==='region'?'框选区域':'已引用选区')+' · '+(selection.elements.map(item=>item.label).join('、')||'页面区域');
-    [upload,selectedButton,regionButton,clearSelection].forEach(button=>button.disabled=busy || !!reading);
+    [upload,selectedButton,regionButton,clearSelection,sketchButton].forEach(button=>button.disabled=busy || !!reading);
   }
   const dataURL=blob=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('读取截图失败'));reader.readAsDataURL(blob);});
   async function prepare(file){
@@ -24,11 +26,15 @@ export function createAIAttachments({getSelected,getDocument,contextFor,onChange
     }finally{bitmap.close();}
   }
   async function addFiles(files){
-    if(busy || reading)return;
+    if(busy || reading)return false;
+    const initialCount=images.length;
     const incoming=[...files];reading++;render();onChange();
     try{for(const image of incoming){if(images.length>=3){onError('每次最多附上 3 张截图');break;}try{images.push(await prepare(image));}catch(error){onError('无法添加截图：'+error.message);}}}
     finally{reading--;render();onChange();}
+    return images.length>initialCount;
   }
+  const sketch=createAISketch({onAttach:file=>addFiles([file]),onError});
+  sketchButton.onclick=()=>{if(images.length>=3){onError('每次最多附上 3 张截图，请先移除一张再手绘');return;}cancelRegion?.();sketch.open();};
   upload.onclick=()=>{file.value='';file.click();};file.onchange=()=>addFiles(file.files);
   input.addEventListener('paste',event=>{const files=[...(event.clipboardData?.items||[])].filter(item=>item.kind==='file' && item.type.startsWith('image/')).map(item=>item.getAsFile()).filter(Boolean);if(files.length && !busy){event.preventDefault();void addFiles(files);}});
   selectedButton.onclick=()=>{const nodes=getSelected().slice(0,8);if(!nodes.length){onError('请先在画布中点击要修改的元素，再引用选区；也可直接框选区域。');return;}selection={kind:'elements',elements:nodes.map(contextFor)};render();onChange();};
@@ -69,6 +75,7 @@ export function createAIAttachments({getSelected,getDocument,contextFor,onChange
     reading:()=>!!reading,
     setBusy(value){busy=value;if(value)cancelRegion?.();render();},
     cancelRegion(){cancelRegion?.();},
+    restore(payload){images=payload.images.map(image=>({...image}));selection=payload.selection;render();onChange();},
     clear(){images=[];selection=null;cancelRegion?.();render();onChange();},
   };
 }

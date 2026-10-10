@@ -5,8 +5,26 @@ export function createVisualPatchEngine(doc) {
   const targets = new Map();
   const baselines = new WeakMap();
   const concealedStyles = new WeakMap();
+  const deletedMarkers = new Map();
+  const columnBaselines = new WeakMap();
+  const tableLayouts = new WeakMap();
+  const interactionRoots = new WeakSet();
   const escape = value => (doc.defaultView?.CSS || globalThis.CSS).escape(value);
   const clean = selector => selector?.replace(/\.ve-(?:hover|selected|dragging)\b/g, '');
+
+  function interactionRoot(element) {
+    for (let node = element; node; node = node.parentElement) {
+      if (interactionRoots.has(node) || node.matches('form,dialog,[role="dialog"],[role="tabpanel"],.drawer,.modal,.detail-page,[id$="-detail-page"],[data-ve-view]')) return node;
+    }
+    return null;
+  }
+
+  function moveBlockReason(element, parent) {
+    if (!element || !parent || element.parentElement === parent) return null;
+    if (interactionRoot(element) !== interactionRoot(parent))
+      return '请在当前子页面、弹窗或表单内调整位置，跨区域移动会破坏入口或表单交互';
+    return null;
+  }
 
   function originalSelector(element) {
     if (identities.has(element)) return identities.get(element);
@@ -33,6 +51,8 @@ export function createVisualPatchEngine(doc) {
   function capture() {
     // Capture descendants too: a move of a container changes every positional path.
     for (const element of doc.querySelectorAll('body, body *')) {
+      // Remember initially closed views after their scripts remove `hidden`.
+      if (element.matches('section[hidden],main[hidden],article[hidden],aside[hidden]')) interactionRoots.add(element);
       const previousSelector=identities.get(element);
       if(previousSelector?.startsWith('#') && doc.querySelectorAll(previousSelector).length>1) {
         identities.delete(element);targets.delete(previousSelector);
@@ -52,6 +72,9 @@ export function createVisualPatchEngine(doc) {
   function resolve(selector) {
     selector = clean(selector);
     if (!selector) return null;
+    // Positional selectors shift after deletion. While its marker is present,
+    // the original target is gone; never resolve that selector to its neighbour.
+    if (deletedMarkers.get(selector)?.isConnected) return null;
     const known = targets.get(selector);
     if (known?.isConnected) return known;
     try {
@@ -116,12 +139,34 @@ export function createVisualPatchEngine(doc) {
     const orders = new Map();
     for (const { key, patch, element, parent } of entries) {
       if (!element) continue;
+      // Also defend old drafts and exported runtimes, not only editor gestures.
+      if (patch.position && moveBlockReason(element, parent)) continue;
       if (patch.deleted === true) {
-        const marker = doc.createElement('template');
-        marker.id = `ve-deleted-${key}`;
-        const siblings = baselines.get(element.parentElement);
-        if (siblings) siblings.splice(siblings.indexOf(element), 1, marker);
-        element.replaceWith(marker);
+        // Column/row operations change the table grid itself (cells, spans and
+        // sticky offsets); they retain the existing structural deletion path.
+        if (element.matches('td,th,tr,col,colgroup')) {
+          const marker = doc.createElement('template');
+          marker.id = `ve-deleted-${key}`;
+          deletedMarkers.set(clean(patch.selector), marker);
+          const siblings = baselines.get(element.parentElement);
+          if (siblings) siblings.splice(siblings.indexOf(element), 1, marker);
+          element.replaceWith(marker);
+          continue;
+        }
+        // Visual deletion must preserve IDs, cached references and event bindings:
+        // imported scripts may still update this subtree when reopening a view.
+        // Keeping its position also prevents nth-of-type patches drifting on reload.
+        if (!doc.getElementById('visual-editor-deletion-style')) {
+          const style = doc.createElement('style');
+          style.id = 'visual-editor-deletion-style';
+          style.textContent = '[data-ve-deleted]{display:none!important}';
+          (doc.head || doc.documentElement).appendChild(style);
+        }
+        if (!element.hasAttribute('data-ve-deleted')) {
+          element.setAttribute('data-ve-deleted', '');
+          element.setAttribute('inert', '');
+          element.setAttribute('aria-hidden', 'true');
+        }
         continue;
       }
       const hasDynamicText = Boolean(element.closest('[data-ve-dynamic]'));
@@ -181,8 +226,68 @@ export function createVisualPatchEngine(doc) {
         if (parent.children[index] !== node) parent.insertBefore(node, parent.children[index] || null);
       }
     }
+    for(const {patch,element} of entries)if(patch.tableColumns && element?.tagName==='TABLE')applyTableColumns(element,patch.tableColumns);
+  }
+
+  function applyTableColumns(table,rules) {
+    const view=doc.defaultView;
+    if(!view)return;
+    const removed=new Map(rules.map(rule=>[rule.index,rule.width]));
+    function captureColumns(columns) {
+      let start=0;
+      return columns.map(cell=>{
+        const span=cell.colSpan || cell.span || 1,style=view.getComputedStyle(cell);
+        const saved={cell,start,span,left:style.left,right:style.right,sticky:style.position==='sticky'};
+        start+=span;return saved;
+      });
+    }
+    function baseline(element,columns) {
+      const previous=columnBaselines.get(element);
+      // Some renderers replace the cells while reusing the same <tr>.
+      if(!previous || previous.some(entry=>entry.cell.parentNode!==element && entry.marker?.parentNode!==element)
+        || columns.some(cell=>!previous.some(entry=>entry.cell===cell)))columnBaselines.set(element,captureColumns(columns));
+      return columnBaselines.get(element);
+    }
+    function shrink(entries,attribute) {
+      for(const entry of entries) {
+        const {cell,start,span,left,right,sticky}=entry;
+        const indices=[...removed.keys()].filter(index=>start<=index && index<start+span);
+        if(indices.length>=span) {
+          if(cell.isConnected) {
+            const marker=doc.createElement('template');
+            entry.marker=marker;
+            deletedMarkers.set(originalSelector(cell),marker);
+            cell.replaceWith(marker);
+          }
+          continue;
+        }
+        if(indices.length && cell.getAttribute(attribute)!==String(span-indices.length))cell.setAttribute(attribute,String(span-indices.length));
+        if(sticky) {
+          const before=[...removed].filter(([index])=>index<start).reduce((sum,[,width])=>sum+width,0);
+          const after=[...removed].filter(([index])=>index>=start+span).reduce((sum,[,width])=>sum+width,0);
+          for(const [property,value,delta] of [['left',left,before],['right',right,after]])if(delta && value.endsWith('px') && parseFloat(value)>0) {
+            const next=Math.max(0,parseFloat(value)-delta)+'px';
+            if(cell.style[property]!==next)cell.style[property]=next;
+          }
+        }
+      }
+    }
+    for(const row of table.rows)shrink(baseline(row,[...row.cells]),'colspan');
+    // Remember the original positions across all column groups as one sequence.
+    if(!tableLayouts.has(table)) {
+      const columns=[...table.children].filter(node=>node.tagName==='COLGROUP').flatMap(group=>group.children.length?[...group.children].filter(node=>node.tagName==='COL'):[group]);
+      const style=view.getComputedStyle(table);
+      tableLayouts.set(table,{columns:captureColumns(columns),minWidth:style.minWidth,width:table.style.width});
+    }
+    const layout=tableLayouts.get(table);
+    shrink(layout.columns,'span');
+    const total=[...removed.values()].reduce((sum,width)=>sum+width,0);
+    for(const property of ['minWidth','width'])if(layout[property].endsWith('px')) {
+      const next=Math.max(0,parseFloat(layout[property])-total)+'px';
+      if(table.style[property]!==next)table.style[property]=next;
+    }
   }
 
   capture();
-  return { apply, capture, selectorFor: originalSelector, resolve };
+  return { apply, capture, selectorFor: originalSelector, resolve, moveBlockReason };
 }

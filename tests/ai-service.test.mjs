@@ -2,6 +2,52 @@ import {Agent} from 'undici';
 import test from 'node:test';import assert from 'node:assert/strict';
 import {createServer} from 'node:http';import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';import {join} from 'node:path';import {tmpdir} from 'node:os';
 import {createAIService} from '../ai-service.mjs';import {ensureSourceOrigin,saveSource,readSourceState} from '../source-store.mjs';import {readVisualEdits} from '../visual-edits-store.mjs';
+test('AI generation explains connection failures and leaves source untouched',async(t)=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-connection-')),editor=join(root,'editor');
+ const original='<!doctype html><h1 id="title">Original</h1>';
+ const project={root,entry:'index.html',editsFile:join(root,'.visual-editor','edits.json'),backupDir:join(root,'.visual-editor','backups')};
+ try{
+  await writeFile(join(root,'index.html'),original);
+  const service=createAIService(editor);await service.settings({endpoint:'http://127.0.0.1:8317/v1',model:'test',apiKey:'test-only-private-key'});
+  for(const [code,expected,status] of [['UND_ERR_SOCKET',/模型连接中断/,502],['ECONNREFUSED',/无法连接模型服务/,502],['ENOTFOUND',/模型接口地址无法解析/,502],['UND_ERR_CONNECT_TIMEOUT',/连接模型服务超时/,504]]){
+   let attempts=0;
+   t.mock.method(globalThis,'fetch',async()=>{attempts++;throw Object.assign(new TypeError('fetch failed test-only-private-key'),{cause:{code}});});
+   await assert.rejects(service.generate(project,{request:'修改标题'}),error=>{
+    assert.match(error.message,expected);assert.match(error.message,/未保存/);assert.doesNotMatch(error.message,/test-only-private-key|fetch failed/);assert.equal(error.statusCode,status);return true;
+   });
+   assert.equal(await readFile(join(root,'index.html'),'utf8'),original);
+   assert.equal(attempts,['UND_ERR_SOCKET','UND_ERR_CONNECT_TIMEOUT'].includes(code)?3:1,'retries are bounded and permanent errors fail immediately');
+   t.mock.restoreAll();
+  }
+ }finally{t.mock.restoreAll();await rm(root,{recursive:true,force:true});}
+});
+
+test('AI generation retries a transient pre-response disconnect but not a partial response',async(t)=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-retry-')),editor=join(root,'editor');
+ const original='<!doctype html><h1 id="title">Original</h1>';
+ const project={root,entry:'index.html',editsFile:join(root,'.visual-editor','edits.json'),backupDir:join(root,'.visual-editor','backups')};
+ try{
+  await writeFile(join(root,'index.html'),original);
+  const service=createAIService(editor);await service.settings({endpoint:'http://127.0.0.1:8317/v1',model:'test',apiKey:'test-only-key'});
+  let attempts=0;const progress=[];
+  t.mock.method(globalThis,'fetch',async()=>{
+   if(++attempts===1)throw Object.assign(new TypeError('fetch failed'),{cause:{code:'UND_ERR_SOCKET'}});
+   return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify({edits:[{path:'index.html',before:'Original',after:'Changed'}],explanation:'改标题'})}}]}),{headers:{'content-type':'application/json'}});
+  });
+  const proposal=await service.generate(project,{request:'修改标题'},{onProgress:event=>progress.push(event)});
+  assert.equal(attempts,2);assert.match(proposal.changes[0].after,/Changed/);assert.ok(progress.some(event=>/重试/.test(event.message||'')));
+  assert.equal(await readFile(join(root,'index.html'),'utf8'),original);
+  t.mock.restoreAll();attempts=0;
+  t.mock.method(globalThis,'fetch',async()=>{attempts++;return new Response(new ReadableStream({start(controller){controller.error(Object.assign(new TypeError('fetch failed'),{cause:{code:'UND_ERR_SOCKET'}}));}}),{headers:{'content-type':'text/event-stream'}});});
+  await assert.rejects(service.generate(project,{request:'修改标题'}),/模型连接中断/);
+  assert.equal(attempts,1,'do not restart a response that has already begun');
+  t.mock.restoreAll();attempts=0;
+  const controller=new AbortController();
+  t.mock.method(globalThis,'fetch',async()=>{attempts++;throw Object.assign(new TypeError('fetch failed'),{cause:{code:'UND_ERR_SOCKET'}});});
+  await assert.rejects(service.generate(project,{request:'修改标题'},{signal:controller.signal,onProgress:event=>{if(/重试/.test(event.message||''))controller.abort();}}),error=>error.statusCode===499&&/已停止/.test(error.message));
+  assert.equal(attempts,1,'stopping during retry prevents another model request');
+ }finally{t.mock.restoreAll();await rm(root,{recursive:true,force:true});}
+});
 test('AI can return bounded source replacements and explains empty or truncated responses',async()=>{
  const root=await mkdtemp(join(tmpdir(),'ai-replacements-')),editor=join(root,'editor');
  const project={root,entry:'index.html',editsFile:join(root,'.visual-editor','page','visual-edits.json'),backupDir:join(root,'.visual-editor','page','backups')};

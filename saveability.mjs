@@ -46,6 +46,14 @@ export function createSaveabilityChecker(sourceDoc, patches = {}, liveDoc = null
     return {kind:'runtime', node:live[0], reason:'修改会保存到 HTML 内的调整记录，打开页面时自动恢复；请保留元素标识'};
   }
   function check(patch) {
+    if('tableColumns' in patch) {
+      const source=matches(sourceDoc,patch.selector),live=liveDoc?matches(liveDoc,patch.selector):[];
+      if(source.length>1 || live.length>1 || !source.length && !stable(patch.selector)
+        || (source[0] || live[0])?.tagName!=='TABLE')return '无法唯一定位表格，请为表格设置固定的 id';
+      if(!Array.isArray(patch.tableColumns) || patch.tableColumns.some(rule=>!Number.isInteger(rule.index) || rule.index<0 || !Number.isFinite(rule.width) || rule.width<0)
+        || new Set(patch.tableColumns.map(rule=>rule.index)).size!==patch.tableColumns.length)return '删列规则无效，请重新选择表格列';
+      if(Object.keys(patch).every(field=>['selector','ai','tableColumns'].includes(field)))return null;
+    }
     const status = target(patch.selector);
     if (status.kind === 'blocked') return status.reason;
     if(status.kind==='template'){

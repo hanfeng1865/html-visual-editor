@@ -1,0 +1,57 @@
+import {chromium} from 'playwright';
+import {createDevServer} from '../dev-server.mjs';
+import {mkdtemp,cp,writeFile,mkdir,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import assert from 'node:assert/strict';
+const temp=await mkdtemp(join(tmpdir(),'ai-sketch-')),project=join(temp,'project'),editorDir=join(temp,'editor');
+await mkdir(project);await cp(new URL('../',import.meta.url),editorDir,{recursive:true,filter:path=>!['.git','node_modules','.editor-workspaces','editor-config.json','output'].includes(path.split(/[\\/]/).pop())});
+await writeFile(join(project,'index.html'),'<!doctype html><h1>Sketch test</h1>');
+const server=createDevServer({rootDir:temp,editorDir});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+const base=`http://127.0.0.1:${server.address().port}`;
+const config=await(await fetch(base+'/api/projects/open',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:project})})).json();
+const browser=await chromium.launch({headless:true});
+try {
+ const page=await browser.newPage({viewport:{width:1440,height:950}});page.setDefaultTimeout(3000);
+ await page.goto(`${base}/editor/editor.html?project=${config.id}&entry=index.html`);
+ await page.frameLocator('#prototype-frame').locator('body[data-ve-editor-ready=true]').waitFor();
+ await page.locator('#ai-chat-button').click();await page.locator('#ai-sketch-open').click();
+ assert.equal(await page.locator('#ai-sketch-dialog').isVisible(),true);
+ assert.equal(await page.locator('#ai-sketch-done').isDisabled(),true,'blank canvas cannot be attached');
+ const canvas=page.locator('#ai-sketch-canvas');
+ const box=await canvas.boundingBox();
+ const ink=()=>canvas.evaluate(c=>{const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let count=0;for(let i=0;i<d.length;i+=4)if(d[i]<240||d[i+1]<240||d[i+2]<240)count++;return count;});
+ await page.mouse.move(box.x+180,box.y+180);await page.mouse.down();await page.mouse.move(box.x+350,box.y+260,{steps:12});await page.mouse.up();
+ const first=await ink();assert.ok(first>200,'pointer stroke produces pixels');
+ await page.locator('#ai-sketch-undo').click();assert.equal(await ink(),0);
+ await page.locator('#ai-sketch-redo').click();assert.equal(await ink(),first);
+ await page.keyboard.press('Escape');assert.equal(await page.locator('#ai-sketch-dialog').isVisible(),false);
+ await page.locator('#ai-sketch-open').click();assert.equal(await ink(),first,'cancel preserves draft');
+ await page.locator('[data-sketch-tool=rectangle]').click();
+ await page.mouse.move(box.x+400,box.y+200);await page.mouse.down();await page.mouse.move(box.x+600,box.y+330,{steps:5});await page.mouse.up();
+ const withRectangle=await ink();assert.ok(withRectangle>first);
+ await page.locator('[data-sketch-tool=eraser]').click();await canvas.click({position:{x:500,y:250}});
+ assert.equal(await ink(),first,'eraser removes the targeted shape');
+ await page.locator('#ai-sketch-undo').click();assert.equal(await ink(),withRectangle);
+ await page.locator('[data-sketch-tool=select]').click();
+ await page.mouse.move(box.x+500,box.y+250);await page.mouse.down();await page.mouse.move(box.x+650,box.y+350,{steps:5});await page.mouse.up();
+ await page.keyboard.press('Delete');assert.equal(await ink(),first,'selection moves and deletes a shape');
+ await page.locator('#ai-sketch-undo').click();
+
+ await page.locator('[data-sketch-tool=text]').click();await canvas.click({position:{x:450,y:400}});
+ await page.locator('#ai-sketch-text').fill('增加一个租赁');await page.locator('#ai-sketch-text').press('ControlOrMeta+Enter');
+ await page.locator('#ai-sketch-done').click();await page.locator('#ai-images img').waitFor();
+ assert.match(await page.locator('#ai-images img').getAttribute('src'),/^data:image\/(png|jpeg);base64,/);
+ assert.match(await page.locator('#ai-images figcaption').innerText(),/手绘草图/);
+ assert.equal(await page.locator('#ai-sketch-dialog').isVisible(),false);
+ await page.locator('#ai-sketch-open').click();assert.equal(await ink(),0,'attached drawing starts a new draft');
+ await page.setViewportSize({width:520,height:760});
+ assert.ok((await canvas.boundingBox()).width<=520,'canvas fits narrow viewport');
+ await page.keyboard.press('Escape');assert.equal(await page.locator('#ai-images img').count(),1);
+ await page.locator('#ai-sketch-open').click();await page.locator('[data-sketch-tool=text]').click();
+ await canvas.click({position:{x:100,y:100}});await page.locator('#ai-sketch-text').fill('仅有文字的草图');
+ assert.equal(await page.locator('#ai-sketch-done').isDisabled(),false,'text draft can be submitted directly');
+ await page.locator('#ai-sketch-done').click();await page.waitForFunction(()=>document.querySelectorAll('#ai-images img').length===2);
+
+ console.log('AI sketch browser: drawing, history, shapes, text, draft, attachment and responsive layout passed');
+}finally{await browser.close();await new Promise(r=>server.close(r));await rm(temp,{recursive:true,force:true});}

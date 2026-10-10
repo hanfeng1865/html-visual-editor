@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const allowedPatchKeys = new Set(['selector', 'text', 'styles', 'position', 'deleted', 'textNodes', 'icon', 'image', 'insert', 'concealed', 'locked', 'attributes', 'ai', 'templateText']);
+const allowedPatchKeys = new Set(['selector', 'text', 'styles', 'position', 'deleted', 'textNodes', 'icon', 'image', 'insert', 'concealed', 'locked', 'attributes', 'ai', 'templateText', 'tableColumns']);
 
 function plainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -30,6 +30,10 @@ export function validateVisualEdits(value) {
     if('templateText' in patch && (!plainObject(patch.templateText) || !Number.isInteger(patch.templateText.scriptIndex) || patch.templateText.scriptIndex<0 || typeof patch.templateText.needle!=='string' || !patch.templateText.needle || patch.templateText.needle.length>20000))throw new Error('模板文字定位格式无效');
     if ('text' in patch && typeof patch.text !== 'string') throw new Error(`补丁 ${key} 的 text 必须是字符串`);
     if ('deleted' in patch && patch.deleted !== true) throw new Error(`补丁 ${key} 的 deleted 只能为 true`);
+    if('tableColumns' in patch && (!Array.isArray(patch.tableColumns) || patch.tableColumns.length>1000
+      || !patch.tableColumns.every(rule=>plainObject(rule) && Object.keys(rule).every(name=>['index','width'].includes(name))
+        && Number.isInteger(rule.index) && rule.index>=0 && rule.index<1000 && Number.isFinite(rule.width) && rule.width>=0)
+      || new Set(patch.tableColumns.map(rule=>rule.index)).size!==patch.tableColumns.length))throw new Error('表格删列规则格式无效');
     if ('textNodes' in patch && (!plainObject(patch.textNodes) || !Object.entries(patch.textNodes).every(([index,text]) => /^(0|[1-9]\d*)$/.test(index) && typeof text === 'string'))) throw new Error('文字片段格式无效');
     if ('attributes' in patch && (!plainObject(patch.attributes) || !Object.entries(patch.attributes).every(([name,value]) => typeof value === 'string' && (['value','placeholder'].includes(name) || name === 'colspan' && /^[1-9]\d*$/.test(value) && Number(value) <= 1000)))) throw new Error('组件属性格式无效');
     if ('icon' in patch && (typeof patch.icon !== 'string' || !/^[a-z][a-z0-9-]*$/.test(patch.icon))) throw new Error('图标格式无效');

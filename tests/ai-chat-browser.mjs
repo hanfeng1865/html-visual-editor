@@ -87,7 +87,8 @@ try {
  await checkProgressAlignment();
  assert.match(await page.locator('#ai-run-title').textContent(),/AI 修改中/);
  assert.match(await page.locator('#ai-run-detail').textContent(),/模型/);
- assert.match(await page.locator('#ai-chat-send').textContent(),/修改中/);
+ assert.match(await page.locator('#ai-chat-send').textContent(),/加入队列/);
+ assert.equal(await page.locator('#ai-chat-input').isEnabled(),true);
  assert.equal(await page.locator('#ai-chat-send').isDisabled(),true);
  await page.waitForFunction(()=>document.querySelector('#ai-run-elapsed').textContent.includes('1 秒'));
  await page.locator('#ai-chat-input').press('ControlOrMeta+Enter');assert.equal(tasks.length,1,'busy state prevents duplicate requests');
@@ -96,13 +97,14 @@ try {
  await page.screenshot({path:'/tmp/html-editor-ai-running.png',clip:{x:indicator.x-6,y:indicator.y-50,width:indicator.width+12,height:indicator.height+100}});
  releaseModel();modelGate=null;
  await page.locator('#ai-run-state[data-phase="verify"]').waitFor();
- await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('已修改并保存'),{},{timeout:5000});
+ await page.waitForFunction(()=>document.querySelector('#ai-run-state').dataset.state==='success',{},{timeout:5000});
  assert.equal(await page.locator('#ai-run-state').getAttribute('data-state'),'success');
  assert.match(await page.locator('#ai-run-title').textContent(),/已保存/);
  assert.equal(await page.locator('.ai-run-steps .is-done').count(),3);
  await checkProgressAlignment();
  for(const width of [1000,1500]){await page.setViewportSize({width,height:1000});await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));await checkProgressAlignment();}
  const completed=await page.locator('#ai-run-state').boundingBox();
+ assert.ok(completed.height<=50,'保存成功提示保持紧凑的一行');
  await page.screenshot({path:'/tmp/html-editor-ai-progress.png',clip:{x:completed.x-4,y:completed.y-4,width:completed.width+8,height:completed.height+8}});
 
  assert.equal(await page.locator('#ai-chat-send').textContent(),'发送并修改 ↑');
@@ -113,7 +115,7 @@ try {
  await page.locator('#ai-chat-history summary').click();assert.equal(await page.locator('#ai-chat-log').isVisible(),true,'可按需展开历史');
  const firstDuration=await page.locator('.ai-chat-message.assistant .ai-chat-duration').first().textContent({timeout:2000});assert.match(firstDuration,/^用时 \d+ 秒$/);
  await page.locator('#ai-chat-input').fill('接着改成 AI two');await page.locator('#ai-chat-input').press('ControlOrMeta+Enter');
- await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('已修改并保存') && !document.querySelector('#ai-chat-input').disabled && document.querySelector('#ai-chat-input').value==='',{},{timeout:5000});
+ await page.waitForFunction(()=>document.querySelector('#ai-run-state').dataset.state==='success' && !document.querySelector('#ai-chat-input').disabled && document.querySelector('#ai-chat-input').value==='',{},{timeout:5000});
  assert.ok(tasks.at(-1).history.some(item=>item.role==='assistant' && item.content.includes('已写入')));
  assert.match(await readFile(join(project,'index.html'),'utf8'),/AI two/);
  assert.equal(await page.locator('#ai-chat-history').evaluate(el=>el.open),false,'下一轮完成自动收起历史');
@@ -126,7 +128,9 @@ try {
  await page.locator('#ai-chat-input').fill('只修改框选区域');mode='fail';await page.locator('#ai-chat-send').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('503'));assert.equal(tasks.at(-1).selection.kind,'region');assert.ok(tasks.at(-1).selection.elements.length>0);
  await page.locator('#ai-selection-clear').click();assert.equal(await page.locator('#ai-selection-context').isVisible(),false);
  await page.locator('#ai-close').click();
- mode='duplicate';await page.locator('#ai-chat-button').click();await page.locator('#ai-chat-input').fill('新增重复标题');await page.locator('#ai-chat-send').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('重复 ID'));assert.match(await readFile(join(project,'index.html'),'utf8'),/AI two/);
+ mode='duplicate';await page.locator('#ai-chat-button').click();await page.locator('#ai-chat-input').fill('新增重复标题');await page.locator('#ai-chat-send').click();await page.waitForFunction(()=>document.querySelector('#ai-error-message').textContent.includes('重复 ID'));assert.match(await readFile(join(project,'index.html'),'utf8'),/AI two/);
+ assert.equal(await page.locator('#ai-error-details').evaluate(el=>el.open),false);assert.ok((await page.locator('#ai-run-detail').textContent()).length<200);
+ await page.locator('#ai-error-details summary').click();assert.equal(await page.locator('#ai-error-message').isVisible(),true);
  mode='fail';await page.locator('#ai-image-file').setInputFiles({name:'失败保留.png',mimeType:'image/png',buffer:Buffer.from(pixel,'base64')});await page.waitForFunction(()=>document.querySelectorAll('#ai-images img').length===1);await page.locator('#ai-chat-input').fill('保留这条失败的请求');await page.locator('#ai-chat-send').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('503'));
  assert.equal(await page.locator('#ai-run-state').getAttribute('data-state'),'error');assert.match(await page.locator('#ai-run-title').textContent(),/失败/);
  assert.equal(await page.locator('#ai-chat-input').inputValue(),'保留这条失败的请求');assert.equal(await page.locator('#ai-chat-send').isEnabled(),true);assert.equal(await page.locator('#ai-images img').count(),1,'失败保留截图');
@@ -166,10 +170,14 @@ try {
  await page.locator('#ai-chat-input').fill('流式修改标题');await page.locator('#ai-chat-send').click();
  await page.waitForFunction(()=>document.querySelector('#ai-live-summary')?.textContent.includes('先保留页面结构'),{},{timeout:2000});
  assert.equal(await readFile(join(project,'index.html'),'utf8'),beforeStream,'summary arrives before the model finishes and before saving');
- assert.equal(await page.locator('#ai-process').evaluate(el=>el.open),true,'process expands during generation');
+ assert.equal(await page.locator('#ai-process').evaluate(el=>el.open),false,'处理过程默认折叠，流式更新不自动展开');
+ await page.locator('#ai-process summary').click();
+ assert.equal(await page.locator('#ai-live-summary').isVisible(),true,'手动点击可展开实时处理过程');
+ await page.locator('#ai-process summary').click();
  releaseModel();modelGate=null;
  await page.locator('#ai-run-state[data-state="success"]').waitFor();
  assert.match(await page.locator('#ai-live-summary').textContent(),/最后检查页面是否正常/);
- assert.match(await page.locator('#ai-process-log').textContent(),/检查.*保存/s);
+ assert.equal(await page.locator('#ai-process ol').count(),0,'处理说明不再展示固定流程列表');
+ assert.equal(await page.locator('#ai-process').evaluate(el=>el.open),false,'手动收起后，完成处理仍保持折叠');
  console.log('PASS: selection/region context, screenshot upload/paste/compression/limits, multimodal transmission and failure retention; chat saves drafts first, sends compatibility rules, automatically checks and saves changes, supports follow-up/collapsed history/reload, blocks duplicate IDs and preserves failed input');
 }finally{releaseModel?.();await browser.close();await new Promise(r=>server.close(r));await new Promise(r=>model.close(r));await rm(temp,{recursive:true,force:true});}

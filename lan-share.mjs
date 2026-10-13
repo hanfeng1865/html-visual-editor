@@ -1,3 +1,4 @@
+import {logicAnnotationsScript} from './share-logic-runtime.mjs';
 import {prdAnnotationsScript} from './prd-annotations-runtime.mjs';
 import {createServer} from 'node:http';
 import {randomBytes,createHash} from 'node:crypto';
@@ -25,16 +26,16 @@ function sharedCanvasPage(share,path=share.entry,search='') {
   const src=(entry+'?'+query).replaceAll('&','&amp;').replaceAll('"','&quot;');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>页面预览</title><style>
     html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff}
-    body{display:flex}#share-canvas{flex:1;min-width:0;min-height:0;overflow:hidden}#share-prd-sidebar{width:340px;flex-shrink:0;border-left:1px solid #dce2eb;background:white;height:100%;box-sizing:border-box}#share-prd-sidebar[hidden]{display:none}@media(max-width:700px){body{flex-direction:column}#share-prd-sidebar{width:100%;height:40%;border-left:0;border-top:1px solid #dce2eb}}
+    body{display:flex}#share-logic-toggle-rail{width:28px;flex:0 0 28px;position:relative;border-left:1px solid #dce2eb;background:#f7f9fc;box-sizing:border-box}#share-logic-toggle-rail[hidden]{display:none}#share-canvas{flex:1;min-width:0;min-height:0;overflow:hidden}#share-sidebars{width:340px;flex-shrink:0;display:flex;flex-direction:column;height:100%;min-height:0}#share-sidebars:not(:has(> :not([hidden]))){display:none}#share-prd-sidebar,#share-logic-sidebar{flex:1;min-height:0;border-left:1px solid #dce2eb;background:white;box-sizing:border-box}#share-prd-sidebar[hidden],#share-logic-sidebar[hidden]{display:none}@media(max-width:700px){body{flex-direction:column}#share-logic-controls{top:0!important}#share-logic-toggle-rail{width:100%;height:28px;flex:0 0 28px;border-top:1px solid #dce2eb;border-left:0}#share-sidebars{width:100%;height:40%;flex-shrink:0}#share-prd-sidebar,#share-logic-sidebar{border-left:0;border-top:1px solid #dce2eb}}
     #share-page-frame{display:block;border:0;transform-origin:0 0;width:${share.viewportWidth}px}
-  </style></head><body><main id="share-canvas"><iframe id="share-page-frame" name="share-page" title="分享页面" src="${src}"></iframe></main><aside id="share-prd-sidebar" hidden aria-label="PRD 标注说明"></aside><script>(()=>{
+  </style></head><body><main id="share-canvas"><iframe id="share-page-frame" name="share-page" title="分享页面" src="${src}"></iframe></main><nav id="share-logic-toggle-rail" hidden aria-label="说明栏开关"></nav><div id="share-sidebars"><aside id="share-logic-sidebar" hidden aria-label="逻辑说明"></aside><aside id="share-prd-sidebar" hidden aria-label="PRD 标注说明"></aside></div><script>(()=>{
     const frame=document.getElementById('share-page-frame'),width=${share.viewportWidth};
     const resize=()=>{const canvas=document.getElementById('share-canvas'),scale=canvas.clientWidth/width;frame.style.height=(canvas.clientHeight/scale)+'px';frame.style.transform='scale('+scale+')';};
     if(location.hash)frame.src+=location.hash;
     addEventListener('resize',resize);resize();
   })();</script></body></html>`;
 }
-export function createLanShareService({mimeTypes,addresses=lanAddresses,stateFile,readPRD}) {
+export function createLanShareService({mimeTypes,addresses=lanAddresses,stateFile,readPRD,readLogic}) {
   const shares=new Map();let server=null,starting=null,port=0;
   let writes=Promise.resolve();
   async function restore() {
@@ -107,7 +108,8 @@ export function createLanShareService({mimeTypes,addresses=lanAddresses,stateFil
       if(path.endsWith('/'))path+='index.html';
       const live=share.root?await liveFiles(share):null;
       const prd=readPRD&&(path==='__share_revision'||/\.html?$/i.test(path))?await readPRD(share,path==='__share_revision'?(url.searchParams.get('entry')||share.entry):path):null;
-      const revision=createHash('sha256').update(JSON.stringify([live?.revision||share.revision,prd?.revision])).digest('hex');
+      const logic=readLogic&&(path==='__share_revision'||/\.html?$/i.test(path))?await readLogic(share,path==='__share_revision'?(url.searchParams.get('entry')||share.entry):path):null;
+      const revision=createHash('sha256').update(JSON.stringify([live?.revision||share.revision,prd?.revision,logic])).digest('hex');
       if(shares.get(share.key)!==share)return fail(404);
       if(path==='__share_revision') {
         response.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});
@@ -129,7 +131,7 @@ export function createLanShareService({mimeTypes,addresses=lanAddresses,stateFil
       }
       let content=['.html','.htm','.css'].includes(extension)?scopeRootUrls(bytes.toString('utf8'),prefix,extension==='.css'):bytes;
       if(['.html','.htm'].includes(extension)) {
-        const script=reloadScript(prefix,revision,path)+(prd?.points?.length?prdAnnotationsScript({points:prd.points}):'');
+        const script=reloadScript(prefix,revision,path)+(prd?.points?.length?prdAnnotationsScript({points:prd.points}):'')+(logic?.boxes?.length?logicAnnotationsScript(logic):'');
         content=/<\/body\s*>/i.test(content)?content.replace(/<\/body\s*>/i,()=>script+'</body>'):content+script;
       }
       response.writeHead(200,{'content-type':mimeTypes[extension]||'application/octet-stream','cache-control':'no-store','x-content-type-options':'nosniff'});

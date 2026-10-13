@@ -825,7 +825,7 @@ button { cursor:pointer; }
 #ai-pending-dialog::backdrop{background:#17243a52;backdrop-filter:blur(3px);}
 #ai-pending-title{margin:0;font-size:18px;font-weight:650;}
 #ai-pending-dialog .ai-body{display:flex;flex-direction:column;gap:16px;}
-#ai-pending-dialog .ai-queue-actions{display:flex;justify-content:flex-end;gap:10px;padding:14px;}
+#ai-pending-dialog .ai-queue-actions{display:flex;justify-content:flex-end;gap:10px;padding:14px 26px;border-top:1px solid #e9edf3;background:#fff;flex-shrink:0;}
 #ai-pending-dialog .ai-empty{min-height:180px;}
 #ai-pending-settings{border:1px solid #e4e9ef;border-radius:11px;}
 #ai-pending-footer{padding:0 26px 16px;color:var(--muted);}

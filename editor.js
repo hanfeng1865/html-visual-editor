@@ -130,6 +130,7 @@ let trackedFrameWindow = null;
 let selectionLayer = null;
 let selectionKeyHandler = null;
 let selectedManualBoxId = null;
+let manualBoxDragging = false;
 let annotationLayout = [];
 
 function setHelpOpen(open, { persist = true } = {}) {
@@ -980,7 +981,7 @@ function addDismissButton(marker, remove, theme) {
   button.textContent = '×';
   button.title = '移除此改动标识（不修改页面内容）';
   button.setAttribute('aria-label', '移除此改动标识');
-  Object.assign(button.style, {position:'absolute',zIndex:'3',right:'-9px',top:'-9px',width:'20px',height:'20px',borderRadius:'50%',border:`1px solid ${theme.solid}`,background:'#fff',color:theme.button,cursor:'pointer',pointerEvents:'auto',padding:'0',lineHeight:'16px'});
+  Object.assign(button.style, {position:'absolute',zIndex:'3',right:'-9px',top:'-24px',width:'20px',height:'20px',borderRadius:'50%',border:`1px solid ${theme.solid}`,background:'#fff',color:theme.button,cursor:'pointer',pointerEvents:'auto',padding:'0',lineHeight:'16px'});
   button.addEventListener('click', event => {
     event.preventDefault(); event.stopPropagation();
     remove();
@@ -990,49 +991,84 @@ function addDismissButton(marker, remove, theme) {
   marker.appendChild(button);
 }
 
-function addResizeHandles(marker, box, target, rect, theme) {
-  const directions = {
-    nw:['0','0','nwse-resize'], n:['50%','0','ns-resize'], ne:['100%','0','nesw-resize'],
-    e:['100%','50%','ew-resize'], se:['100%','100%','nwse-resize'], s:['50%','100%','ns-resize'],
-    sw:['0','100%','nesw-resize'], w:['0','50%','ew-resize'],
+// Expand the editable coordinate space beyond a small original control while
+// preserving the box's position in its scrolling region.
+function manualBoxEditAnchor(box, target) {
+  const doc = target.ownerDocument;
+  const targetBounds = target.getBoundingClientRect();
+  let anchor = target === doc.body || (targetBounds.width >= 240 && targetBounds.height >= 160) ? target : (target.parentElement || target);
+  for (let parent = anchor; parent; parent = parent.parentElement) {
+    const style = doc.defaultView.getComputedStyle(parent);
+    const parentBounds = parent.getBoundingClientRect();
+    if ((parentBounds.width >= 240 && parentBounds.height >= 160) || /auto|scroll/.test(style.overflowX + style.overflowY) || parent.matches('.cockpit-view,dialog,[role="dialog"],.drawer,.modal')) { anchor = parent; break; }
+    anchor = parent;
+    if (parent === doc.body) break;
+  }
+  const bounds = anchor.getBoundingClientRect();
+  const width = Math.max(anchor.scrollWidth, bounds.width), height = Math.max(anchor.scrollHeight, bounds.height);
+  // Use the un-clipped coordinates so editing a partly off-screen box keeps
+  // the full region instead of shrinking it to its visible fragment.
+  const original = target.getBoundingClientRect();
+  const oldWidth = Math.max(target.scrollWidth, original.width), oldHeight = Math.max(target.scrollHeight, original.height);
+  const raw = {left:original.left+box.x*oldWidth,top:original.top+box.y*oldHeight};
+  raw.right=raw.left+box.width*oldWidth;raw.bottom=raw.top+box.height*oldHeight;
+  const nested=boxScrollContainer(target,raw);
+  const left=raw.left-target.scrollLeft-(nested?nested.scrollLeft-(box.nestedScrollLeft??nested.scrollLeft):0);
+  const top=raw.top-target.scrollTop-(nested?nested.scrollTop-(box.nestedScrollTop??nested.scrollTop):0);
+  Object.assign(box,{selector:annotationSelector(anchor),x:(left-bounds.left+anchor.scrollLeft)/width,y:(top-bounds.top+anchor.scrollTop)/height,width:box.width*oldWidth/width,height:box.height*oldHeight/height});
+  delete box.nestedScrollLeft;delete box.nestedScrollTop;
+  return anchor;
+}
+
+function startManualBoxDrag(event, handle, marker, box, target, rect, direction) {
+  if (event.button !== 0) return;
+  event.preventDefault();event.stopPropagation();
+  const original = {...box};
+  target = manualBoxEditAnchor(box,target);
+  const initial = {x:box.x,y:box.y,width:box.width,height:box.height};
+  const bounds=target.getBoundingClientRect();
+  const anchorWidth=Math.max(target.scrollWidth,bounds.width),anchorHeight=Math.max(target.scrollHeight,bounds.height);
+  const minWidth=12/anchorWidth,minHeight=12/anchorHeight,startX=event.clientX,startY=event.clientY;
+  manualBoxDragging=true;cancelAnimationFrame(changeRefreshTimer);
+  handle.setPointerCapture(event.pointerId);
+  const move=moveEvent=>{
+    const dx=(moveEvent.clientX-startX)/anchorWidth,dy=(moveEvent.clientY-startY)/anchorHeight;
+    let {x,y,width,height}=initial;
+    if(direction==='move'){
+      x=Math.max(0,Math.min(1-width,initial.x+dx));y=Math.max(0,Math.min(1-height,initial.y+dy));
+    }else{
+      if(direction.includes('e'))width=Math.max(minWidth,Math.min(1-x,initial.width+dx));
+      if(direction.includes('s'))height=Math.max(minHeight,Math.min(1-y,initial.height+dy));
+      if(direction.includes('w')){x=Math.max(0,Math.min(initial.x+initial.width-minWidth,initial.x+dx));width=initial.width+initial.x-x;}
+      if(direction.includes('n')){y=Math.max(0,Math.min(initial.y+initial.height-minHeight,initial.y+dy));height=initial.height+initial.y-y;}
+    }
+    Object.assign(box,{x,y,width,height});
+    marker.style.left=`${rect.left+(x-initial.x)*anchorWidth}px`;
+    marker.style.top=`${rect.top+(y-initial.y)*anchorHeight}px`;
+    marker.style.width=`${Math.max(12,rect.right-rect.left+(width-initial.width)*anchorWidth)}px`;
+    marker.style.height=`${Math.max(12,rect.bottom-rect.top+(height-initial.height)*anchorHeight)}px`;
+    drawAnnotationConnectors();
   };
-  Object.entries(directions).forEach(([direction, [left, top, cursor]]) => {
-    const handle = marker.ownerDocument.createElement('span');
-    handle.title = '调整手动标记范围';
-    Object.assign(handle.style, {position:'absolute',zIndex:'1',left,top,width:'10px',height:'10px',border:`2px solid ${theme.solid}`,borderRadius:'50%',background:'#fff',transform:'translate(-50%,-50%)',cursor,pointerEvents:'auto'});
-    handle.addEventListener('pointerdown', event => {
-      event.preventDefault(); event.stopPropagation();
-      const startX = event.clientX, startY = event.clientY;
-      const initial = {x:box.x,y:box.y,width:box.width,height:box.height};
-      const bounds = target.getBoundingClientRect();
-      const anchorWidth = Math.max(target.scrollWidth, bounds.width), anchorHeight = Math.max(target.scrollHeight, bounds.height);
-      const minWidth = 12 / anchorWidth, minHeight = 12 / anchorHeight;
-      handle.setPointerCapture(event.pointerId);
-      const move = moveEvent => {
-        const dx = (moveEvent.clientX - startX) / anchorWidth;
-        const dy = (moveEvent.clientY - startY) / anchorHeight;
-        let x=initial.x,y=initial.y,width=initial.width,height=initial.height;
-        if (direction.includes('e')) width=Math.max(minWidth,Math.min(1-x,initial.width+dx));
-        if (direction.includes('s')) height=Math.max(minHeight,Math.min(1-y,initial.height+dy));
-        if (direction.includes('w')) { x=Math.max(0,Math.min(initial.x+initial.width-minWidth,initial.x+dx)); width=initial.width+initial.x-x; }
-        if (direction.includes('n')) { y=Math.max(0,Math.min(initial.y+initial.height-minHeight,initial.y+dy)); height=initial.height+initial.y-y; }
-        Object.assign(box,{x,y,width,height});
-        marker.style.left=`${rect.left+(x-initial.x)*anchorWidth}px`;
-        marker.style.top=`${rect.top+(y-initial.y)*anchorHeight}px`;
-        marker.style.width=`${Math.max(12,rect.right-rect.left+(width-initial.width)*anchorWidth)}px`;
-        marker.style.height=`${Math.max(12,rect.bottom-rect.top+(height-initial.height)*anchorHeight)}px`;
-      };
-      const finish = () => {
-        handle.removeEventListener('pointermove', move);
-        handle.removeEventListener('pointerup', finish);
-        handle.removeEventListener('pointercancel', finish);
-        saveAnnotations(); renderChangeMarkers();
-      };
-      handle.addEventListener('pointermove', move);
-      handle.addEventListener('pointerup', finish);
-      handle.addEventListener('pointercancel', finish);
-    });
-    marker.appendChild(handle);
+  const finish=finishEvent=>{
+    handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',finish);handle.removeEventListener('pointercancel',finish);handle.removeEventListener('lostpointercapture',finish);
+    manualBoxDragging=false;
+    if(finishEvent.type==='pointercancel'){for(const key of Object.keys(box))delete box[key];Object.assign(box,original);}
+    saveAnnotations();renderChangeMarkers();
+  };
+  handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',finish);handle.addEventListener('pointercancel',finish);handle.addEventListener('lostpointercapture',finish);
+}
+
+function addResizeHandles(marker, box, target, rect, theme) {
+  const directions={nw:['0','0','nwse-resize'],n:['50%','0','ns-resize'],ne:['100%','0','nesw-resize'],e:['100%','50%','ew-resize'],se:['100%','100%','nwse-resize'],s:['50%','100%','ns-resize'],sw:['0','100%','nesw-resize'],w:['0','50%','ew-resize']};
+  for(const [edge,css] of Object.entries({top:{left:'8px',right:'8px',top:'-3px',height:'6px'},bottom:{left:'8px',right:'8px',bottom:'-3px',height:'6px'},left:{left:'-3px',top:'8px',bottom:'8px',width:'6px'},right:{right:'-3px',top:'8px',bottom:'8px',width:'6px'}})){
+    const handle=marker.ownerDocument.createElement('span');handle.dataset.moveEdge=edge;handle.title='拖动框边移动手动标记';
+    Object.assign(handle.style,{position:'absolute',zIndex:'0',cursor:'move',pointerEvents:'auto',touchAction:'none',...css});
+    handle.addEventListener('pointerdown',event=>startManualBoxDrag(event,handle,marker,box,target,rect,'move'));marker.append(handle);
+  }
+  Object.entries(directions).forEach(([direction,[left,top,cursor]])=>{
+    const handle=marker.ownerDocument.createElement('span');handle.dataset.resizeDirection=direction;handle.title='调整手动标记范围';
+    Object.assign(handle.style,{position:'absolute',zIndex:'1',left,top,width:'10px',height:'10px',border:`2px solid ${theme.solid}`,borderRadius:'50%',background:'#fff',transform:'translate(-50%,-50%)',cursor,pointerEvents:'auto',touchAction:'none'});
+    handle.addEventListener('pointerdown',event=>startManualBoxDrag(event,handle,marker,box,target,rect,direction));marker.append(handle);
   });
 }
 
@@ -1385,6 +1421,7 @@ function startBoxSelection() {
 function scheduleChangeRefresh(event) {
   // Hover transitions inside the annotation UI must not replace active controls.
   if (!['scroll','resize'].includes(event?.type) && event?.target?.closest?.('#editor-change-overlay,#ve-editor-prd, #editor-box-selection')) return;
+  if (manualBoxDragging) return;
   cancelAnimationFrame(changeRefreshTimer);
   changeRefreshTimer = requestAnimationFrame(renderChangeMarkers);
 }
@@ -1403,7 +1440,7 @@ canvasScroll.addEventListener('scroll', scheduleChangeRefresh);
 window.addEventListener('resize', scheduleChangeRefresh);
 
 function renderChangeMarkers() {
-  if (!showChanges) return;
+  if (!showChanges || manualBoxDragging) return;
   const doc = frameDocument();
   if (!doc?.body) return;
   let overlay = doc.getElementById('editor-change-overlay');
@@ -1447,16 +1484,17 @@ function renderChangeMarkers() {
     const badge = doc.createElement('button');
     badge.type = 'button'; badge.textContent = String(index);
     badge.title = '查看右侧逻辑说明'; badge.setAttribute('aria-label', `查看第 ${index} 项逻辑说明`);
-    Object.assign(badge.style, {position:'absolute',left:'50%',top:'50%',transform:'translate(-50%,-50%)',zIndex:'2',width:'28px',height:'28px',padding:'0',border:`2px solid #fff`,borderRadius:'50%',background:theme.solid,color:'#fff',boxShadow:`0 2px 7px ${theme.shadow}`,font:'700 12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif',cursor:'pointer',pointerEvents:'auto'});
+    Object.assign(badge.style, {position:'absolute',left:'0px',top:'-20px',zIndex:'2',width:'18px',height:'18px',minWidth:'18px',minHeight:'18px',boxSizing:'border-box',padding:'0',border:`2px solid #fff`,borderRadius:'50%',background:theme.solid,color:'#fff',boxShadow:`0 2px 7px ${theme.shadow}`,font:'700 10px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif',cursor:'pointer',pointerEvents:'auto'});
     badge.addEventListener('click', event => {
       event.preventDefault(); event.stopPropagation();
+      selectedManualBoxId = box.id; renderChangeMarkers();
       const card = annotationList.querySelector(`[data-annotation-id="${CSS.escape(box.id)}"]`);
       card?.scrollIntoView({block:'nearest'}); card?.classList.add('active');
       setTimeout(() => card?.classList.remove('active'), 1200);
     });
     const editButton = doc.createElement('button');
     editButton.type = 'button'; editButton.textContent = '✎'; editButton.title = '选中并调整改动框范围'; editButton.setAttribute('aria-label', '选中并调整改动框范围');
-    Object.assign(editButton.style, {position:'absolute',right:'-7px',top:'-9px',zIndex:'3',width:'18px',height:'18px',padding:'0',border:`1px solid ${theme.solid}`,borderRadius:'50%',background:'#fff',color:theme.button,font:'700 10px/1 inherit',cursor:'pointer',pointerEvents:'auto'});
+    Object.assign(editButton.style, {position:'absolute',right:'-25px',top:'2px',zIndex:'3',width:'18px',height:'18px',padding:'0',border:`1px solid ${theme.solid}`,borderRadius:'50%',background:'#fff',color:theme.button,font:'700 10px/1 inherit',cursor:'pointer',pointerEvents:'auto'});
     editButton.addEventListener('pointerdown', event => event.stopPropagation());
     editButton.addEventListener('click', event => {
       event.preventDefault(); event.stopPropagation(); selectedManualBoxId = box.id; saveAnnotations(); renderChangeMarkers();

@@ -82,7 +82,11 @@ try{
  await page.locator('#prop-color-text').fill('#123456');await page.locator('#prop-color-text').dispatchEvent('change');
  await text('#live','AI live');
  await page.locator('#ai-chat-button').click();await page.locator('#ai-chat-input').fill('尚未发送的对话要求');
- await page.locator('#ai-button').click();assert.equal(await page.locator('#ai-pending-count').textContent(),'2');await page.locator('#ai-pending-later').click();assert.equal(await page.locator('#ai-pending-dialog').isVisible(),false);assert.equal(await page.locator('#ai-chat-input').inputValue(),'尚未发送的对话要求');
+ await page.locator('#ai-button').click();assert.equal(await page.locator('#ai-pending-count').textContent(),'2');
+ await page.locator('#ai-pending').evaluate(list=>{for(let i=0;i<6;i++)list.append(...[...list.children].slice(0,2).map(node=>node.cloneNode(true)));});
+ const actionBounds=await page.locator('#ai-generate').boundingBox();
+ assert.ok(actionBounds && actionBounds.y>=0 && actionBounds.y+actionBounds.height<=1050,'待办列表很长时处理按钮仍在视口内');
+ await page.locator('#ai-pending-later').click();assert.equal(await page.locator('#ai-pending-dialog').isVisible(),false);assert.equal(await page.locator('#ai-chat-input').inputValue(),'尚未发送的对话要求');
  await page.locator('#ai-button').click();await page.locator('#ai-generate').click();
  await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('HTTP 503'));
  const html=await readFile(join(project,'index.html'),'utf8');assert.match(html,/Direct saved/);assert.match(html,/rgb\(18, 52, 86\)/);assert.doesNotMatch(html,/AI text/);

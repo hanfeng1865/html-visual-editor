@@ -73,12 +73,15 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
   const skills=createGenerationSkills(editorDir);
   const requirements=createRequirementsService(editorDir,{ai,workspaces,skills});
   const prd=createPRDAnnotationsService({ai,requirements,skills});
-  const sharing=createLanShareService({mimeTypes,stateFile:join(editorDir,'.editor-workspaces','lan-shares.json'),readPRD:async(share,path)=>{
+  const sharedAnnotationsFile=(share,path)=>{
     const id=share.key.slice(0,share.key.indexOf(':'));
     const pageKey=createHash('sha256').update(path).digest('hex').slice(0,20);
-    const annotationsFile=id==='builtin'?join(projectRoot,'change-annotations.json'):join(share.root,'.visual-editor',pageKey,'change-annotations.json');
-    return prd.read({annotationsFile});
-  }});
+    return id==='builtin'?join(projectRoot,'change-annotations.json'):join(share.root,'.visual-editor',pageKey,'change-annotations.json');
+  };
+  const sharing=createLanShareService({mimeTypes,stateFile:join(editorDir,'.editor-workspaces','lan-shares.json'),
+    readLogic:async(share,path)=>({...await readAnnotations(sharedAnnotationsFile(share,path)),defaultCockpit:share.key.startsWith('builtin:')?'human-admin':'page'}),
+    readPRD:async(share,path)=>prd.read({annotationsFile:sharedAnnotationsFile(share,path)})
+  });
 
   const server=createServer(async (request, response) => {
     try {

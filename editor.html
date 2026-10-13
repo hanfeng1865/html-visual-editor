@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>HTML 可视化编辑器</title>
-  <link rel="stylesheet" href="editor.css?v=13" />
+  <link rel="stylesheet" href="editor.css?v=14" />
   <link rel="stylesheet" href="requirements.css?v=1" />
 </head>
 <body>
@@ -411,12 +411,12 @@
           <summary class="ai-section-heading"><span>可视化编辑待办</span><span id="ai-pending-count" class="ai-count">0</span></summary>
           <div id="ai-empty" class="ai-empty"><span class="ai-empty-icon" aria-hidden="true">✓</span><strong>还没有需要 AI 写入的修改</strong><p id="ai-empty-detail">编辑组件后，需要 AI 写回源码的修改会显示在这里。</p><button id="ai-start-edit" class="ai-secondary" type="button">去编辑组件</button></div>
           <div id="ai-pending"></div>
-          <div class="ai-queue-actions"><button id="ai-pending-later" class="ai-secondary" type="button">暂不处理</button><button id="ai-generate" class="ai-primary" type="button" disabled>处理待办并保存</button></div>
         </details>
       <div id="ai-pending-settings"></div>
       <div id="ai-pending-results"></div>
     </div>
     <div id="ai-pending-footer"></div>
+    <div class="ai-queue-actions"><button id="ai-pending-later" class="ai-secondary" type="button">暂不处理</button><button id="ai-generate" class="ai-primary" type="button" disabled>处理待办并保存</button></div>
   </dialog>
   <div class="toast" id="toast" role="status"></div>
   <script type="module" src="editor.js?v=27"></script>

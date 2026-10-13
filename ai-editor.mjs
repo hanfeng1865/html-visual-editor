@@ -88,6 +88,28 @@ export async function verifyAIPage(doc, pending, baselineDoc=null) {
     // Positional selectors describe the source order, not the order after a column move.
     // Resolve anonymous cells through their existing stable child identifiers.
     const original=baselineDoc?.querySelector(path);
+    const flexibleMove=original && !original.matches('td,th') && !original.id && !original.hasAttribute('data-ve-node') && /:nth-(?:of-type|child)\(/.test(path);
+    // A positional selector can refer to a different sibling after a deletion,
+    // or to nothing after a move. Match the original component before checking it.
+    if(original && /:nth-(?:of-type|child)\(/.test(path) && !original.id && !original.hasAttribute('data-ve-node')) {
+      let scope=original.parentElement,scopeSelector=null;
+      while(scope && scope!==baselineDoc.body) {
+        if(scope.id && baselineDoc.querySelectorAll(`[id=${JSON.stringify(scope.id)}]`).length===1){scopeSelector=`[id=${JSON.stringify(scope.id)}]`;break;}
+        if(scope.hasAttribute('data-ve-node')){
+          const selector=`[data-ve-node=${JSON.stringify(scope.getAttribute('data-ve-node'))}]`;
+          if(baselineDoc.querySelectorAll(selector).length===1){scopeSelector=selector;break;}
+        }
+        scope=scope.parentElement;
+      }
+      const text=original.textContent.trim().replace(/\s+/g,' ');
+      const matches=root=>root?[...root.querySelectorAll(original.tagName.toLowerCase())].filter(node=>node.textContent.trim().replace(/\s+/g,' ')===text):[];
+      const baselineRoot=scopeSelector?baselineDoc.querySelector(scopeSelector):baselineDoc.body;
+      const previewRoot=scopeSelector?doc.querySelector(scopeSelector):doc.body;
+      if(text && matches(baselineRoot).length===1) {
+        const candidates=matches(previewRoot);
+        element=candidates.length===1?candidates[0]:null;
+      }
+    }
     if(original?.matches('td,th') && /:nth-(?:of-type|child)\(/.test(path)) {
       const identities=[...original.querySelectorAll('[id],[data-ve-node]')].map(node=>node.id?`[id=${JSON.stringify(node.id)}]`:`[data-ve-node=${JSON.stringify(node.getAttribute('data-ve-node'))}]`).filter(selector=>baselineDoc.querySelectorAll(selector).length===1);
       if(identities.length){
@@ -112,8 +134,11 @@ export async function verifyAIPage(doc, pending, baselineDoc=null) {
     }
     for(const [name,value] of Object.entries(patch.attributes||{}))if(element.getAttribute(name)!==value)failures.push(patch.selector+'：属性未生效');
     for(const [property,value] of Object.entries(patch.styles||{})) {
+      // Drag coordinates describe the editor canvas, not a responsive source layout.
+      if(flexibleMove && patch.position && ['position','left','top','right','bottom','translate','transform','zIndex'].includes(property))continue;
       const probe=doc.createElement('span');probe.style[property]=value;element.parentElement.append(probe);
       const expected=doc.defaultView.getComputedStyle(probe)[property],actual=doc.defaultView.getComputedStyle(element)[property];probe.remove();
+      if(original && baselineDoc.defaultView.getComputedStyle(original)[property]===expected)continue;
       if(element.style[property]!==value && actual!==expected)failures.push(patch.selector+'：样式 '+property+' 未生效');
     }
     if(patch.icon && element.getAttribute('data-lucide')!==patch.icon)failures.push(patch.selector+'：图标未生效');
@@ -121,7 +146,11 @@ export async function verifyAIPage(doc, pending, baselineDoc=null) {
     if('locked' in patch && element.hasAttribute('data-ve-locked')!==patch.locked)failures.push(patch.selector+'：锁定状态未生效');
     if('concealed' in patch && (doc.defaultView.getComputedStyle(element).display==='none')!==patch.concealed)failures.push(patch.selector+'：显示状态未生效');
     const position=patch.position||patch.insert;
-    if(position && (element.parentElement!==doc.querySelector(position.parent) || [...element.parentElement.children].filter(n=>!n.matches('template')).indexOf(element)!==position.index))failures.push(patch.selector+'：位置未生效');
+    if(position && (element.parentElement!==doc.querySelector(position.parent) || [...element.parentElement.children].filter(n=>!n.matches('template')).indexOf(element)!==position.index)) {
+      const before=original?.getBoundingClientRect(),after=element.getBoundingClientRect();
+      const visuallyMoved=flexibleMove && before && Math.hypot(after.x-before.x,after.y-before.y)>8;
+      if(!visuallyMoved)failures.push(patch.selector+'：位置未生效');
+    }
   }
   return failures;
 }

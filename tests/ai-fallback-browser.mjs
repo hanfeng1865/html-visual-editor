@@ -4,11 +4,12 @@ const temp=await mkdtemp(join(tmpdir(),'ai-ui-')),project=join(temp,'project'),e
 await cp(new URL('../',import.meta.url),editorDir,{recursive:true,filter:path=>!['.git','node_modules','.editor-workspaces','editor-config.json'].includes(path.split(/[\\/]/).pop())});
 await writeFile(join(project,'index.html'),'<!doctype html><html><head><style>h1,p{margin:100px 20px}</style><script src="/app.js" defer></script></head><body><h1 id="title">Original</h1><p id="rewritten">Source text</p><div data-ve-dynamic><p id="live">Source live</p></div><script>throw new Error("Existing baseline problem")</script></body></html>');
 await writeFile(join(project,'app.js'),'document.querySelector("#rewritten").textContent="Script text";document.querySelector("#live").textContent="Live text";');
-let task,modelMode='fail',connectionMode='good';
+let task,modelMode='fail',connectionMode='good',releaseModel;
 const model=createServer(async(req,res)=>{if(req.url==='/v1/models'){res.setHeader('content-type','application/json');res.end(JSON.stringify({data:[{id:'test'},{id:'second-model'}]}));return;}let body='';for await(const chunk of req)body+=chunk;const requestBody=JSON.parse(body);if(requestBody.messages[0].content==='Reply with OK only.'){
  if(connectionMode==='auth'){res.writeHead(401);res.end();return;}
  res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:'OK'}}]}));return;
 }if(modelMode==='fail'){res.writeHead(503);res.end();return;}task=JSON.parse(JSON.parse(body).messages[1].content);
+if(modelMode==='background')await new Promise(resolve=>{releaseModel=resolve;});
 res.setHeader('content-type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({edits:[{path:'app.js',before:task.files['app.js'],after:modelMode==='wrong'?'document.querySelector("#rewritten").textContent="Wrong";':'document.querySelector("#rewritten").textContent="AI text";document.querySelector("#live").textContent="AI live";'+(modelMode==='new-error'?'throw new Error("AI regression");':modelMode==='new-resource'?'const image=new Image();image.src="missing-ai-image.png";document.body.append(image);':'')}],explanation:'Updated generator'})}}]}));});
 await new Promise(r=>model.listen(0,'127.0.0.1',r));process.env.VE_UI_MODEL_KEY='test-key';
 const server=createDevServer({rootDir:temp,editorDir});await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
@@ -22,9 +23,11 @@ try{
  assert.match(await page.locator('#saveability-summary').textContent(),/待 AI 写入：0 项/);
  assert.equal(await page.locator('#ai-pending-count').textContent(),'0');
  assert.match(await page.locator('#ai-empty').textContent(),/还没有需要 AI 写入的修改/);
- assert.equal(await page.locator('#ai-queue').evaluate(el=>el.open),false,'没有待办时默认收起');
+ assert.equal(await page.locator('#ai-pending-dialog').evaluate(el=>el.matches(':modal')),true,'AI 待办使用独立弹窗');
+ assert.equal(await page.locator('#ai-dialog #ai-queue').count(),0,'待办不放在对话侧栏');
+ assert.equal(await page.locator('#ai-dialog').isVisible(),false,'打开待办不打开对话');
  assert.equal(await page.locator('#ai-generate').isVisible(),false,'没有待办时不展示处理按钮');
- await page.locator('#ai-queue > summary').click();assert.equal(await page.locator('#ai-start-edit').isVisible(),true,'展开后仍可进入组件编辑');
+ assert.equal(await page.locator('#ai-start-edit').isVisible(),true,'展开后仍可进入组件编辑');
  await page.locator('#ai-settings > summary').click();
  await page.waitForFunction(()=>document.querySelector('#ai-models-status').textContent.includes('2 个模型'));
  await page.locator('#ai-model-toggle').click();await page.locator('#ai-model-search').fill('second');assert.equal(await page.locator('#ai-model-options [role=option]').count(),1);await page.locator('#ai-model-options [role=option]').click();assert.equal(await page.locator('#ai-model').inputValue(),'second-model');
@@ -75,10 +78,12 @@ try{
  assert.match(await page.locator('#saveability-summary').textContent(),/待 AI 写入：0 项/);
  await text('#rewritten','AI text');
  assert.match(await page.locator('#saveability-summary').textContent(),/待 AI 写入：1 项/);
- await page.locator('#ai-button').click();assert.equal(await page.locator('#ai-pending-count').textContent(),'1');assert.equal(await page.locator('#ai-empty').isVisible(),false);await page.locator('#ai-close').click();
+ await page.locator('#ai-button').click();assert.equal(await page.locator('#ai-pending-count').textContent(),'1');assert.equal(await page.locator('#ai-empty').isVisible(),false);await page.locator('#ai-pending-close').click();
  await page.locator('#prop-color-text').fill('#123456');await page.locator('#prop-color-text').dispatchEvent('change');
  await text('#live','AI live');
- await page.locator('#ai-button').click();assert.equal(await page.locator('#ai-pending-count').textContent(),'2');await page.locator('#ai-generate').click();
+ await page.locator('#ai-chat-button').click();await page.locator('#ai-chat-input').fill('尚未发送的对话要求');
+ await page.locator('#ai-button').click();assert.equal(await page.locator('#ai-pending-count').textContent(),'2');await page.locator('#ai-pending-later').click();assert.equal(await page.locator('#ai-pending-dialog').isVisible(),false);assert.equal(await page.locator('#ai-chat-input').inputValue(),'尚未发送的对话要求');
+ await page.locator('#ai-button').click();await page.locator('#ai-generate').click();
  await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('HTTP 503'));
  const html=await readFile(join(project,'index.html'),'utf8');assert.match(html,/Direct saved/);assert.match(html,/rgb\(18, 52, 86\)/);assert.doesNotMatch(html,/AI text/);
  const config=await (await fetch(base+`/api/projects/current?project=${p.id}&entry=index.html`)).json();
@@ -87,9 +92,22 @@ try{
  modelMode='wrong';await page.locator('#ai-button').click();await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-status').textContent.includes('未通过验证'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
  modelMode='new-error';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-error-message').textContent.includes('AI regression'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
  modelMode='new-resource';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-error-message').textContent.includes('missing-ai-image.png'));assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,patches);
- modelMode='good';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-run-state').dataset.state==='success');
+ modelMode='background';await page.locator('#ai-generate').click();await page.waitForFunction(()=>document.querySelector('#ai-run-state').dataset.phase==='generate');
+ assert.equal(await page.locator('#ai-pending-close').isEnabled(),true,'运行时可以隐藏待办弹窗');
+ await page.locator('#ai-pending-close').click();assert.equal(await page.locator('#ai-pending-dialog').isVisible(),false);
+ assert.equal(await page.locator('#ai-button').getAttribute('title'),'AI 正在处理，点击查看进度');
+ await page.locator('#ai-button').click();assert.equal(await page.locator('#ai-run-state').getAttribute('data-state'),'running');
+ assert.match(await page.locator('#ai-status').textContent(),/模型正在修改最新源码/,'重新打开保留执行状态');
+ assert.equal(await page.locator('#ai-generate').isEnabled(),false,'隐藏后不能重复执行');
+ await page.keyboard.press('Escape');assert.equal(await page.locator('#ai-pending-dialog').isVisible(),false,'Esc 隐藏不中断任务');
+ await page.locator('#ai-button').click();await page.locator('#ai-pending-later').click();assert.equal(await page.locator('#ai-pending-dialog').isVisible(),false);
+ while(!releaseModel)await new Promise(resolve=>setTimeout(resolve,10));releaseModel();
+ await page.waitForFunction(()=>document.querySelector('#ai-run-state').dataset.state==='success');
+ assert.equal(await page.locator('#ai-pending-dialog').isVisible(),false,'完成后不强制弹出');
+ await page.locator('#ai-button').click();assert.equal(await page.locator('#ai-run-state').getAttribute('data-state'),'success');
  assert.match(await page.locator('#ai-status').textContent(),/原页面已有/);
  assert.equal(await page.locator('iframe[data-ai-baseline]').count(),0);
+ assert.equal(task.request||'','','处理待办不携带未发送的对话');
  assert.match(task.files['index.html'],/Direct saved/);assert.match(task.files['index.html'],/rgb\(18, 52, 86\)/);
  assert.equal(await page.locator('#ai-apply').count(),0);
  assert.deepEqual(JSON.parse(await readFile(config.editsFile,'utf8')).patches,{});

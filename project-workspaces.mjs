@@ -1,10 +1,11 @@
-import { readdir, readFile, realpath, mkdir, writeFile, rename, stat } from 'node:fs/promises';
+import { readdir, readFile, realpath, mkdir, writeFile, rename, stat, lstat, rm } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createVisualPatchEngine } from './visual-patch-engine.mjs';
 import { readVisualEdits } from './visual-edits-store.mjs';
+import { blankProjectFiles } from './project-starter.mjs';
 
 const runFile = promisify(execFile);
 const digest = value => createHash('sha256').update(value).digest('hex').slice(0, 20);
@@ -56,18 +57,54 @@ export function createWorkspaceManager(editorRoot, { registryDir = join(editorRo
     try { root = await realpath(project.root); } catch { throw error('项目文件夹已移动或不可用，请重新打开', 404); }
     return { ...project, root, builtin: false };
   }
-  async function open(folder) {
-    await ready;
+  async function resolveFolder(folder) {
     if (typeof folder !== 'string' || !folder.trim() || !isAbsolute(folder.trim())) throw error('请输入本机文件夹的完整路径');
     let root;
     try {root = await realpath(folder.trim());} catch {throw error('找不到这个文件夹，请检查路径或重新选择');}
     if (!(await stat(root)).isDirectory()) throw error('请选择文件夹，而不是单个文件');
+    return root;
+  }
+  async function open(folder) {
+    await ready;
+    const root = await resolveFolder(folder);
     const pages = await discoverPages(root);
-    if (!pages.length) throw error('文件夹中没有 HTML 文件；需要构建的项目请先生成静态页面');
+    if (!pages.length) throw Object.assign(error('这个文件夹还没有 HTML 页面，可以在这里构建新项目'), { code:'PROJECT_NEEDS_CREATION', root });
     const id = digest(root), project = { id, name: basename(root), root, lastOpened: Date.now() };
     registry = [project, ...registry.filter(item => item.id !== id)].slice(0, 30);
     await persist();
     return { ...project, pages, entry: pages[0], builtin: false };
+  }
+  async function create(folder) {
+    await ready;
+    const root = await resolveFolder(folder);
+    const lock = join(root, '.visual-editor-create');
+    try { await mkdir(lock); }
+    catch (e) {
+      if (e.code === 'EEXIST') throw error('这个文件夹正在创建项目，请稍后重新打开', 409);
+      throw e;
+    }
+    const written = [];
+    try {
+      if ((await discoverPages(root)).length) throw error('文件夹已有 HTML 页面，请直接关联并打开，或选择新的空文件夹', 409);
+      const files = blankProjectFiles();
+      // Check every destination, including dangling symlinks, before writing.
+      for (const name of Object.keys(files)) {
+        try { await lstat(join(root, name)); }
+        catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+        throw error(`文件夹已存在 ${name}，请选择空文件夹构建新项目，原文件不会被覆盖`, 409);
+      }
+      try {
+        for (const [name, content] of Object.entries(files)) {
+          const path = join(root, name);
+          await writeFile(path, content, { flag:'wx' });
+          written.push(path);
+        }
+      } catch (e) {
+        await Promise.all(written.map(path => rm(path, { force:true })));
+        throw e;
+      }
+      return { ...await open(root), created:true };
+    } finally { await rm(lock, { recursive:true, force:true }); }
   }
   async function remove(id) {
     await ready;
@@ -101,7 +138,7 @@ export function createWorkspaceManager(editorRoot, { registryDir = join(editorRo
     try {await stat(join(editorRoot,'prototype.html'));builtin=[{id:'builtin',name:'当前驾驶舱原型',root:editorRoot,builtin:true}];} catch {}
     return [...builtin, ...registry];
   }
-  return { get, open, remove, describe, list };
+  return { get, open, create, remove, describe, list };
 }
 
 export async function chooseProjectFolder() {

@@ -142,6 +142,10 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
         const body = await readJsonBody(request);
         return json(response, 200, await workspaces.open(body.path));
       }
+      if (url.pathname === '/api/projects/create' && request.method === 'POST') {
+        const body = await readJsonBody(request);
+        return json(response, 200, await workspaces.create(body.path));
+      }
       if (url.pathname === '/api/projects/remove' && request.method === 'POST') {
         const body = await readJsonBody(request);
         return json(response, 200, await workspaces.remove(body.id));
@@ -308,7 +312,8 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
       if (request.method === 'HEAD') return response.end();
       createReadStream(actualPath).pipe(response);
     } catch (error) {
-      json(response, error.statusCode || 500, { error: error.message || '服务器错误' });
+      json(response, error.statusCode || 500, { error: error.message || '服务器错误',
+        ...(error.code === 'PROJECT_NEEDS_CREATION' ? { code:error.code, root:error.root } : {}) });
     }
   });
   server.sharingReady=sharing.ready();

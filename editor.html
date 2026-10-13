@@ -106,26 +106,11 @@
           </div>
           <div class="help-card">
             <b>初版生成提示词</b>
-            <p>第一次让 AI 生成项目时，将下面这段加入你的需求提示词，方便后续在本编辑器中修改并直接保存源码。</p>
+            <p>新项目和 AI 对话会自动应用以下要求。使用其他 AI 工具生成项目时，也可以复制这段提示词。</p>
             <details class="help-generation-prompt">
               <summary>展开完整提示词</summary>
               <p>点击文本框后按 ⌘/Ctrl+A 全选，再按 ⌘/Ctrl+C 复制。</p>
-              <textarea aria-label="初版生成提示词" readonly rows="16" spellcheck="false">请生成一个兼容本地 HTML 可视化编辑器、方便后续直接保存源码的项目。
-
-代码要求：
-1. 使用静态 HTML、CSS 和原生 JavaScript，不引入需要构建才能运行的框架。
-2. 页面主体结构直接写在 HTML 中，包括标题、卡片、按钮、表格、弹窗和预先定义的内容区域，不要通过 JS 拼接生成整个页面。
-3. 给需要编辑的容器和元素设置唯一、固定、语义明确的 id 或 data-ve-node。不要使用随机标识、时间戳或数组下标作为标识。
-4. 标题、数值、单位、说明文字分别使用独立元素，便于单独编辑。
-5. JavaScript 主要负责事件绑定、显示隐藏、筛选和交互，不要覆盖静态文案，不要反复替换可编辑容器的 innerHTML。
-6. 确实需要动态更新的部分尽量缩小到具体数值或列表区域，不要让整个卡片或整个页面变成动态生成区域。明确区分演示数据与真实接口数据。
-7. CSS 使用清晰的类名，尽量不使用 !important，不要用 JS 持续写入样式覆盖可视化修改。
-8. 图片、图标、字体及其他依赖尽量放在项目本地，使用相对路径，避免关键功能依赖远程 CDN。
-9. HTML、CSS、JS 按职责组织；不要把大量第三方库内联进 HTML。
-10. 交付前检查：没有重复 ID、没有未定义变量、没有资源加载失败；刷新和重复操作交互后，静态文案及可编辑结构不会被重新覆盖。
-
-验收要求：
-在可视化编辑器中修改一个标题、一处样式、一个数值和一个组件位置，保存后关闭编辑器，通过普通本地 HTTP 服务打开原项目，确认修改仍然存在。</textarea>
+              <textarea id="initial-generation-prompt" aria-label="初版生成提示词" readonly rows="16" spellcheck="false"></textarea>
             </details>
           </div>
           <div class="help-card subtle" hidden>
@@ -188,12 +173,7 @@
             </div>
           </details>
         </section>
-        <details id="ai-queue" class="ai-queue-panel">
-          <summary class="ai-section-heading"><span>可视化编辑待办</span><span id="ai-pending-count" class="ai-count">0</span></summary>
-          <div id="ai-empty" class="ai-empty"><span class="ai-empty-icon" aria-hidden="true">✓</span><strong>还没有需要 AI 写入的修改</strong><p id="ai-empty-detail">可以直接在上方输入修改要求；也可编辑组件，需要 AI 写回的修改会显示在这里。</p><button id="ai-start-edit" class="ai-secondary" type="button">去编辑组件</button></div>
-          <div id="ai-pending"></div>
-          <div class="ai-queue-actions"><button id="ai-generate" class="ai-primary" type="button" disabled>处理待办并保存</button></div>
-        </details>
+
       </div>
       <details id="ai-results" hidden><summary class="ai-results-title">查看本次源码修改</summary><div id="ai-diff"></div></details>
     </div>
@@ -396,12 +376,18 @@
   </dialog>
   <dialog id="project-dialog" aria-labelledby="project-dialog-title">
     <form id="open-project-form">
-      <div class="project-dialog-head"><div><h2 id="project-dialog-title">打开项目文件夹</h2><p>关联原文件夹，保留 HTML、CSS、JS 与图片的目录关系。</p></div><button id="close-project-dialog" type="button" aria-label="关闭">×</button></div>
+      <div class="project-dialog-head"><div><h2 id="project-dialog-title">打开项目文件夹</h2><p>打开已有 HTML 项目，或选择空文件夹从零构建新项目。</p></div><button id="close-project-dialog" type="button" aria-label="关闭">×</button></div>
       <button id="choose-project-folder" type="button" class="choose-folder-button">选择本机文件夹…</button>
       <label for="project-folder-path">或粘贴文件夹完整路径</label>
       <input id="project-folder-path" type="text" placeholder="/Users/你的名字/Documents/我的原型" autocomplete="off" />
-      <p class="project-note">仅关联，不搬移文件。编辑时自动保留浏览器草稿；点击「保存到项目」或 ⌘/Ctrl+S 才会写入原 HTML，并自动备份。AI 待办处理并保存后才能交付完整源码。支持普通静态页面；需要构建或后端的项目，请先生成静态页面。</p>
+      <p class="project-note">已有项目会直接关联原文件夹；空文件夹可创建新项目。手动编辑后点击「保存到项目」或 ⌘/Ctrl+S 写入源码，并自动备份。AI 构建完成后自动保存。支持静态 HTML 页面。</p>
       <p id="project-open-status" role="status"></p>
+      <section id="project-create-option" class="project-create-option" hidden aria-labelledby="project-create-title">
+        <h3 id="project-create-title">从空白开始构建</h3>
+        <p>在所选文件夹创建可编辑的起始页面，自动打开 AI 对话。描述你的需求即可构建，也可以从“图层与组件”手动添加内容。</p>
+        <p>默认生成 HTML、CSS、JavaScript 和代码规范文件，自动应用本编辑器的兼容要求。已有同名文件时会提示更换文件夹。</p>
+        <button id="create-blank-project" type="button">构建新项目</button>
+      </section>
       <div class="project-dialog-actions"><button type="submit" id="confirm-open-project">关联并打开</button></div>
     </form>
   </dialog>
@@ -416,6 +402,21 @@
         <div class="generation-skill-footer"><span>保存保留最近 20 个历史版本。已有生成结果需重新生成并审核。</span><button id="generation-skill-save" type="button" class="primary" disabled>保存并应用</button></div>
       </section>
     </div>
+  </dialog>
+  <dialog id="ai-pending-dialog" aria-labelledby="ai-pending-title">
+    <header class="ai-head"><div class="ai-heading"><span class="ai-symbol" aria-hidden="true">✦</span><div><h2 id="ai-pending-title">AI 待办</h2><p>查看可视化修改，选择是否交给 AI 处理</p></div></div><button id="ai-pending-close" class="ai-icon-button" type="button" aria-label="关闭 AI 待办">×</button></header>
+    <div id="ai-pending-progress"></div>
+    <div class="ai-body">
+        <details id="ai-queue" open class="ai-queue-panel">
+          <summary class="ai-section-heading"><span>可视化编辑待办</span><span id="ai-pending-count" class="ai-count">0</span></summary>
+          <div id="ai-empty" class="ai-empty"><span class="ai-empty-icon" aria-hidden="true">✓</span><strong>还没有需要 AI 写入的修改</strong><p id="ai-empty-detail">编辑组件后，需要 AI 写回源码的修改会显示在这里。</p><button id="ai-start-edit" class="ai-secondary" type="button">去编辑组件</button></div>
+          <div id="ai-pending"></div>
+          <div class="ai-queue-actions"><button id="ai-pending-later" class="ai-secondary" type="button">暂不处理</button><button id="ai-generate" class="ai-primary" type="button" disabled>处理待办并保存</button></div>
+        </details>
+      <div id="ai-pending-settings"></div>
+      <div id="ai-pending-results"></div>
+    </div>
+    <div id="ai-pending-footer"></div>
   </dialog>
   <div class="toast" id="toast" role="status"></div>
   <script type="module" src="editor.js?v=27"></script>

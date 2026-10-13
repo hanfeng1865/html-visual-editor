@@ -1,4 +1,5 @@
 import {mergeAITasks} from './ai-task-steering.mjs';
+import {EDITOR_SOURCE_RULES} from './ai-source-rules.mjs';
 import {installGenerationSkillsUI} from './generation-skills-ui.mjs';
 import {createPRDAnnotationsUI} from './prd-annotations-ui.mjs';
 import {readAIEvents} from './ai-stream.mjs';
@@ -35,6 +36,7 @@ import { tableRowContext, blankTableRow, tableColumnContext, blankTableCell, col
 import { isTextToolbarTarget, textToolbarStyles } from './text-toolbar.mjs';
 
 const editorQuery = new URLSearchParams(location.search);
+document.getElementById('initial-generation-prompt').value=EDITOR_SOURCE_RULES;
 const projectId = editorQuery.get('project') || 'builtin';
 const projectEntry = editorQuery.get('entry') || (projectId === 'builtin' ? 'prototype.html' : '');
 let projectConfig = null;
@@ -2386,7 +2388,7 @@ async function saveToSource(choices={},checkedRevision=null,{autoAI=true}={}) {
     document.querySelector('[data-mode="preview"]').click();
     reloadFrame();saveStatus.textContent=message;
     document.getElementById('source-change-banner').hidden=true;sourceDialog.close();showToast(Object.keys(routes.pending).length?'可直接写入的修改已保存，其余已进入 AI 待办':'已写入项目源码');
-    if(autoAI && Object.keys(routes.pending).length)setTimeout(()=>openAI(true),0);
+    if(autoAI && Object.keys(routes.pending).length)setTimeout(()=>openAIPending(),0);
     return pendingCount===0;
   }catch(error){sourceStatus.textContent=`未完成保存：${error.message}。草稿已保留。`;if(!sourceDialog.open)sourceDialog.showModal();saveStatus.textContent='未完成保存';return false;}
   finally{sourceBusy=false;saveButton.disabled=false;}
@@ -3039,10 +3041,10 @@ function currentFrameUrl() {
 }
 async function readProjectApi(path,options) {
   const response=await fetch(path,options),body=await response.json();
-  if(!response.ok)throw new Error(body.error || '无法读取项目');
+  if(!response.ok)throw Object.assign(new Error(body.error || '无法读取项目'),{code:body.code,root:body.root});
   return body;
 }
-async function switchProjectPage(id,entry,hash='') {
+async function switchProjectPage(id,entry,hash='',created=false) {
   commitCardForm();
   // Draft keys are immutable for this document, so a late save cannot reach another page.
   if(projectReady)persistState(undefined,{dirty:localStorage.getItem(DRAFT_DIRTY_KEY)==='1'});
@@ -3051,21 +3053,44 @@ async function switchProjectPage(id,entry,hash='') {
   const url=new URL('/editor/editor.html',location.href);
   if(id!=='builtin') {url.searchParams.set('project',id);url.searchParams.set('entry',entry);}
   if(hash)url.searchParams.set('view',hash.replace(/^#/,''));
+  if(created)url.searchParams.set('newProject','1');
   location.assign(url.href);
 }
 const projectDialog=document.getElementById('project-dialog');
-document.getElementById('open-project-button').onclick=()=>{document.getElementById('project-open-status').textContent='';projectDialog.showModal();};
+const projectFolderPath=document.getElementById('project-folder-path');
+const projectCreateOption=document.getElementById('project-create-option');
+let projectCreationRoot='';
+function resetProjectCreation(){projectCreationRoot='';projectCreateOption.hidden=true;document.getElementById('confirm-open-project').hidden=false;document.getElementById('project-open-status').dataset.kind='';}
+document.getElementById('open-project-button').onclick=()=>{document.getElementById('project-open-status').textContent='';resetProjectCreation();projectDialog.showModal();};
+projectFolderPath.addEventListener('input',()=>{resetProjectCreation();document.getElementById('project-open-status').textContent='';});
 document.getElementById('close-project-dialog').onclick=()=>projectDialog.close();
 async function openProjectFolder(native=false) {
   const status=document.getElementById('project-open-status'),buttons=projectDialog.querySelectorAll('button');
+  resetProjectCreation();projectFolderPath.disabled=true;
   buttons.forEach(button=>button.disabled=true);status.textContent=native?'请在系统窗口中选择文件夹…':'正在读取项目中的 HTML 页面…';
   try {
     const project=await readProjectApi(native?'/api/projects/choose':'/api/projects/open',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(native?{}:{path:document.getElementById('project-folder-path').value})});
     if(project.cancelled){status.textContent='已取消选择';return;}
     await switchProjectPage(project.id,project.entry);
-  } catch(error) {status.textContent=error.message;}
-  finally {buttons.forEach(button=>button.disabled=false);}
+  } catch(error) {
+    status.textContent=error.message;
+    if(error.code==='PROJECT_NEEDS_CREATION' && error.root){
+      projectFolderPath.value=error.root;projectCreationRoot=error.root;projectCreateOption.hidden=false;
+      document.getElementById('confirm-open-project').hidden=true;status.dataset.kind='info';
+    }
+  }
+  finally {buttons.forEach(button=>button.disabled=false);projectFolderPath.disabled=false;}
 }
+document.getElementById('create-blank-project').onclick=async()=>{
+  if(!projectCreationRoot)return;
+  const status=document.getElementById('project-open-status'),buttons=projectDialog.querySelectorAll('button');
+  buttons.forEach(button=>button.disabled=true);projectFolderPath.disabled=true;status.textContent='正在创建项目并打开构建工作区…';
+  try {
+    const project=await readProjectApi('/api/projects/create',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path:projectCreationRoot})});
+    await switchProjectPage(project.id,project.entry,'',true);
+  } catch(error){resetProjectCreation();status.textContent=error.message;}
+  finally{buttons.forEach(button=>button.disabled=false);projectFolderPath.disabled=false;}
+};
 document.getElementById('open-project-form').onsubmit=event=>{event.preventDefault();openProjectFolder();};
 document.getElementById('choose-project-folder').onclick=()=>openProjectFolder(true);
 document.getElementById('project-select').onchange=async event=>{
@@ -3155,6 +3180,7 @@ function routePendingEdits(currentDocument=null) {
   renderPendingHints(Object.keys(routes.pending).length);
   return routes;
 }
+const aiPendingDialog=document.getElementById('ai-pending-dialog');
 const aiDialog=document.getElementById('ai-dialog'),aiStatus=document.getElementById('ai-status');
 let aiProposal=null,aiFingerprint='',aiBusy=false,aiRequest='';
 const aiChatInput=document.getElementById('ai-chat-input'),aiChatSend=document.getElementById('ai-chat-send');
@@ -3279,6 +3305,13 @@ function updateAIChatControls(){
   aiSteerButton.disabled=aiChatSend.disabled || (!!aiSteeringTask && !aiSteeringAfterSave) || !aiAbortController || aiAbortController.signal.aborted;
   aiChatSend.classList.toggle('is-running',aiBusy);
   document.getElementById('ai-chat-button').classList.toggle('ai-is-running',aiBusy);
+  const pendingButton=document.getElementById('ai-button');
+  pendingButton.classList.toggle('ai-is-running',aiBusy);
+  pendingButton.title=aiBusy?'AI 正在处理，点击查看进度':'查看 AI 待办';
+  const pendingClose=document.getElementById('ai-pending-close');
+  pendingClose.title=aiBusy?'隐藏弹窗，AI 会继续处理':'关闭 AI 待办';
+  pendingClose.setAttribute('aria-label',aiBusy?'隐藏 AI 待办，继续处理':'关闭 AI 待办');
+  document.getElementById('ai-pending-later').textContent=aiBusy?'隐藏，继续处理':'暂不处理';
 }
 aiChatInput.addEventListener('input',updateAIChatControls);
 aiChatSend.onclick=submitAIChat;
@@ -3286,16 +3319,37 @@ aiChatInput.addEventListener('keydown',event=>{if(event.key==='Enter' && (event.
 aiDialog.addEventListener('cancel',event=>{if(aiBusy)event.preventDefault();});
 aiDialog.addEventListener('close',()=>{aiAttachments.cancelRegion();editorMain.classList.remove('ai-open');document.getElementById('ai-chat-button').setAttribute('aria-expanded','false');updateSidebarToggle();resizeCanvas();updateTextToolbar();});
 updateAIChatControls();
-async function openAI(auto=false) {
-  editorMain.classList.remove('sidebar-collapsed');
-  editorMain.classList.add('ai-open');
-  updateSidebarToggle();
-  document.getElementById('ai-chat-button').setAttribute('aria-expanded','true');
-  if(!aiDialog.open)aiDialog.show();
-  resizeCanvas();updateTextToolbar();
+// Connection settings and execution feedback follow the active AI surface.
+const aiSharedPanels=['ai-run-state','ai-process','ai-settings','ai-results','ai-status'].map(id=>{
+  const node=document.getElementById(id),home=document.createComment(id+' home');
+  node.before(home);return {node,home};
+});
+function placeAIPanels(pending) {
+  const targets=['ai-pending-progress','ai-pending-progress','ai-pending-settings','ai-pending-results','ai-pending-footer'];
+  aiSharedPanels.forEach(({node,home},index)=>pending?document.getElementById(targets[index]).append(node):home.after(node));
+}
+async function openAIPending() {await openAI(true);}
+aiPendingDialog.addEventListener('close',()=>{closeModelMenu();placeAIPanels(false);});
+for(const id of ['ai-pending-close','ai-pending-later'])document.getElementById(id).onclick=()=>aiPendingDialog.close();
+async function openAI(pendingView=false) {
+  if(pendingView) {
+    placeAIPanels(true);
+    if(!aiPendingDialog.open)aiPendingDialog.showModal();
+  } else {
+    if(aiPendingDialog.open)aiPendingDialog.close();
+    placeAIPanels(false);
+
+    editorMain.classList.remove('sidebar-collapsed');
+    editorMain.classList.add('ai-open');
+    updateSidebarToggle();
+    document.getElementById('ai-chat-button').setAttribute('aria-expanded','true');
+    if(!aiDialog.open)aiDialog.show();
+    resizeCanvas();updateTextToolbar();
+  }
   const pending=routePendingEdits().pending,list=document.getElementById('ai-pending');list.replaceChildren();
-  const count=Object.keys(pending).length;document.getElementById('ai-pending-count').textContent=count;document.getElementById('ai-empty').hidden=!!count;document.getElementById('ai-queue').open=!!count;document.getElementById('ai-generate').disabled=aiBusy || !count;updateAIChatControls();
+  const count=Object.keys(pending).length;document.getElementById('ai-pending-count').textContent=count;document.getElementById('ai-empty').hidden=!!count;document.getElementById('ai-queue').open=true;document.getElementById('ai-generate').disabled=aiBusy || !count;document.getElementById('ai-generate').hidden=!count;updateAIChatControls();
   for(const patch of Object.values(pending)) {const row=document.createElement('p');row.textContent=(patch.ai.context.label||patch.selector)+'：'+Object.values(patch.ai.fields).join('；');const details=document.createElement('details'),title=document.createElement('summary'),values=document.createElement('pre');title.textContent='查看修改要求';values.textContent=JSON.stringify(Object.fromEntries(Object.entries(patch).filter(([name])=>!['ai','selector'].includes(name))),null,2);details.append(title,values);list.append(row,details);}
+  if(aiBusy)return;
   try{
     const settings=await sourceRequest('/api/ai/settings');
     for(const [id,key] of [['ai-endpoint','endpoint'],['ai-model','model'],['ai-key-env','apiKeyEnv']])document.getElementById(id).value=settings[key]||'';
@@ -3305,10 +3359,10 @@ async function openAI(auto=false) {
     const connection=document.getElementById('ai-connection');connection.textContent=settings.ready?'已配置':settings.configured?'待设置密钥':'未配置';connection.dataset.ready=String(settings.ready);
     aiStatus.textContent=Object.keys(pending).length?settings.ready?(localStorage.getItem(DRAFT_DIRTY_KEY)==='1'?'修改已进入待办，生成前会先保存项目。':'待办已保存，可以生成源码修改。'):'请先配置模型接口和 API 密钥。':'自动备份并保存 · 完成后刷新画布';
     if(settings.ready)loadAIModels();
-    if(auto && settings.ready)await generateAI('');
+
   }catch(error){aiStatus.textContent=error.message;}
 }
-document.getElementById('ai-button').onclick=()=>openAI();
+document.getElementById('ai-button').onclick=()=>openAIPending();
 document.getElementById('ai-chat-button').onclick=async()=>{await openAI();aiChatInput.focus();};
 document.getElementById('ai-close').onclick=()=>{if(!aiBusy)aiDialog.close();};
 document.getElementById('ai-settings-save').onclick=async()=>{
@@ -3413,7 +3467,7 @@ async function generateAI(request=aiChat.value(),task=null) {
   }
   finally{
     baselineFrame?.remove();previewFrame?.remove();aiAbortController=null;aiBusy=false;aiActiveTask=null;aiSteeringAfterSave=false;
-    document.getElementById('ai-close').disabled=false;button.disabled=!Object.keys(routePendingEdits().pending).length;
+    document.getElementById('ai-close').disabled=false;document.getElementById('ai-pending-close').disabled=false;document.getElementById('ai-pending-later').disabled=false;button.disabled=!Object.keys(routePendingEdits().pending).length;
     const steering=aiSteeringTask;aiSteeringTask=null;
     if(steering && aiQueuePaused)aiTaskQueue.unshift(steering);
     renderAITaskQueue();updateAIChatControls();
@@ -3421,14 +3475,14 @@ async function generateAI(request=aiChat.value(),task=null) {
     else if(succeeded)runNextAITask();
   }
 }
-document.getElementById('ai-generate').onclick=()=>generateAI();
+document.getElementById('ai-generate').onclick=()=>generateAI('');
 async function applyAIProposal() {
   if(!aiProposal || aiFingerprint!==pendingFingerprint())throw new Error('修改要求或草稿已变化，本次未写入，请重新发送');
   const explanation=aiProposal.explanation||aiRequest||'待办修改';
   const saved=await sourceRequest('/api/ai/apply',{id:aiProposal.id,verified:true});
   state=createEditorState({});rememberSource(saved);clearSelection();persistState('AI 修改已写入源码，历史版本已备份',{dirty:false});reloadFrame();aiProposal=null;
   if(aiRequest){aiChat.add('assistant','已写入源码：'+explanation,{durationMs:performance.now()-aiProgressStarted});document.getElementById('ai-chat-history').open=false;}
-  document.getElementById('ai-queue').open=false;document.getElementById('ai-pending-count').textContent='0';document.getElementById('ai-pending').replaceChildren();document.getElementById('ai-empty').hidden=false;
+  document.getElementById('ai-generate').hidden=true;document.getElementById('ai-queue').open=true;document.getElementById('ai-pending-count').textContent='0';document.getElementById('ai-pending').replaceChildren();document.getElementById('ai-empty').hidden=false;
   aiStatus.textContent='';showToast('AI 已修改并保存，主界面已刷新');
 }
 
@@ -3504,7 +3558,7 @@ aiDialog.addEventListener('close',closeModelMenu);
 
 document.getElementById('ai-endpoint').addEventListener('input',()=>{document.getElementById('ai-http-note').hidden=!document.getElementById('ai-endpoint').value.startsWith('http:');});
 
-document.getElementById('ai-start-edit').onclick=()=>{aiDialog.close();document.querySelector('[data-mode="edit"]').click();showToast('选中组件并修改，需 AI 写回的修改会自动进入待办');};
+document.getElementById('ai-start-edit').onclick=()=>{aiPendingDialog.close();document.querySelector('[data-mode="edit"]').click();showToast('选中组件并修改，需 AI 写回的修改会自动进入待办');};
 
 const prdAnnotations=createPRDAnnotationsUI({endpoint:projectEndpoint,getDocument:frameDocument,getProject:()=>projectConfig,getIterationId:()=>requirementsWorkspace.selectedIterationId(),onLayoutChange:resizeCanvas,notify:showToast});
 const requirementsWorkspace=createRequirementsWorkspace({
@@ -3521,3 +3575,11 @@ document.getElementById('requirements-button').onclick=()=>{
   if(!projectConfig){showToast('请先打开 HTML 项目文件夹');return;}
   commitCardForm();void requirementsWorkspace.open();
 };
+
+if(projectReady && editorQuery.get('newProject')==='1') {
+  const url=new URL(location.href);url.searchParams.delete('newProject');history.replaceState(null,'',url);
+  await openAI();
+  aiChatInput.placeholder='描述你要构建的项目：用途、页面内容、风格和交互。兼容编辑器的代码要求会自动应用。';
+  aiChatInput.focus();
+  showToast('新项目已创建。输入需求开始构建，或在“图层与组件”中添加内容。');
+}

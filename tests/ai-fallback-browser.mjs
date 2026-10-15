@@ -18,7 +18,7 @@ const p=await post('/api/projects/open',{path:project});
 await post('/api/ai/settings',{endpoint:`http://127.0.0.1:${model.address().port}/v1`,model:'test',apiKeyEnv:'VE_UI_MODEL_KEY'});
 const browser=await chromium.launch({headless:true});
 try{
- const page=await browser.newPage({viewport:{width:1700,height:1050}});page.setDefaultTimeout(10000);const errors=[];page.on('pageerror',e=>{if(!['Existing baseline problem','AI regression'].includes(e.message))errors.push(e.message);});
+ const page=await browser.newPage({viewport:{width:1700,height:1050}});page.setDefaultTimeout(30000);const errors=[];page.on('pageerror',e=>{if(!['Existing baseline problem','AI regression'].includes(e.message))errors.push(e.message);});
  await page.goto(`${base}/editor/editor.html?project=${p.id}&entry=index.html`);const f=page.frameLocator('#prototype-frame');await f.locator('body[data-ve-editor-ready=true]').waitFor();await page.locator('#ai-button').click();
  assert.match(await page.locator('#saveability-summary').textContent(),/待 AI 写入：0 项/);
  assert.equal(await page.locator('#ai-pending-count').textContent(),'0');

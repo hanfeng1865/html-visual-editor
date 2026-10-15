@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const allowedPatchKeys = new Set(['selector', 'text', 'styles', 'position', 'deleted', 'textNodes', 'icon', 'image', 'insert', 'concealed', 'locked', 'attributes', 'ai', 'templateText', 'tableColumns']);
+const allowedPatchKeys = new Set(['selector', 'text', 'styles', 'position', 'deleted', 'textNodes', 'icon', 'image', 'insert', 'concealed', 'locked', 'attributes', 'ai', 'templateText', 'tableColumns', 'templateSource']);
 
 function plainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -28,6 +28,15 @@ export function validateVisualEdits(value) {
       for (const value of Object.values(patch.ai.context)) if (typeof value!=='string') throw new Error('AI 组件上下文必须是文字');
     }
     if('templateText' in patch && (!plainObject(patch.templateText) || !Number.isInteger(patch.templateText.scriptIndex) || patch.templateText.scriptIndex<0 || typeof patch.templateText.needle!=='string' || !patch.templateText.needle || patch.templateText.needle.length>20000))throw new Error('模板文字定位格式无效');
+    if('templateSource' in patch){
+      const b=patch.templateSource;
+      if(!plainObject(b) || typeof b.file!=='string' || !b.file || b.file.length>2000
+        || !(b.scriptIndex===null || Number.isInteger(b.scriptIndex) && b.scriptIndex>=0)
+        || typeof b.segment!=='string' || !b.segment || b.segment.length>200000
+        || typeof b.opening!=='string' || !b.opening || b.opening.length>20000
+        || !Number.isInteger(b.offset) || b.offset<0 || b.segment.slice(b.offset,b.offset+b.opening.length)!==b.opening
+        || !['"',"'",'`'].includes(b.quote))throw new Error('生成源码定位格式无效');
+    }
     if ('text' in patch && typeof patch.text !== 'string') throw new Error(`补丁 ${key} 的 text 必须是字符串`);
     if ('deleted' in patch && patch.deleted !== true) throw new Error(`补丁 ${key} 的 deleted 只能为 true`);
     if('tableColumns' in patch && (!Array.isArray(patch.tableColumns) || patch.tableColumns.length>1000

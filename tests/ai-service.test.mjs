@@ -1,7 +1,56 @@
 import {Agent} from 'undici';
 import test from 'node:test';import assert from 'node:assert/strict';
-import {createServer} from 'node:http';import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';import {join} from 'node:path';import {tmpdir} from 'node:os';
+import {createServer} from 'node:http';import {mkdtemp,writeFile,readFile,rm,mkdir} from 'node:fs/promises';import {join} from 'node:path';import {tmpdir} from 'node:os';
 import {createAIService} from '../ai-service.mjs';import {ensureSourceOrigin,saveSource,readSourceState} from '../source-store.mjs';import {readVisualEdits} from '../visual-edits-store.mjs';
+test('oversized projects send page sources and transitive dependencies without delivery copies',async(t)=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-page-scope-')),editor=join(root,'editor');
+ const project={root,entry:'pages/exam.html',editsFile:join(root,'.visual-editor','edits.json')};
+ const original='<h1>选择题</h1><script src="../shared/app.mjs?v=1"></script>';
+ let sent,mode='good';
+ try{
+  for(const folder of ['pages','shared','assets','delivery'])await mkdir(join(root,folder));
+  await writeFile(join(root,project.entry),original);
+  await writeFile(join(root,'pages/demo.js'),'const questions = ["选择题"];');
+  await writeFile(join(root,'shared/app.mjs'),'import "./questions.js"; import("/assets/extra.js?v=1");');
+  await writeFile(join(root,'shared/questions.js'),'import "../assets/%E9%A2%98%E7%9B%AE.js";');
+  await writeFile(join(root,'assets/题目.js'),'const questionType = "组合填空题";');
+  await writeFile(join(root,'assets/extra.js'),'const extra = true;');
+  const copy='/*'+ 'x'.repeat(2*1024*1024)+'*/';await writeFile(join(root,'delivery/copy.js'),copy);
+  const service=createAIService(editor);await service.settings({endpoint:'http://127.0.0.1:8317/v1',model:'test',apiKey:'test-only-key'});
+  t.mock.method(globalThis,'fetch',async(_url,options)=>{
+   sent=JSON.parse(JSON.parse(options.body).messages[1].content);
+   const edit=mode==='outside'?{path:'delivery/copy.js',before:'xxx',after:'yyy'}:{path:project.entry,before:'<h1>选择题</h1>',after:'<h1>选择题、填空题、组合填空题</h1>'};
+   return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({edits:[edit]})}}]}));
+  });
+  const progress=[],proposal=await service.generate(project,{request:'补充填空题演示数据'},{onProgress:event=>progress.push(event)});
+  assert.deepEqual(Object.keys(sent.files).sort(),['assets/extra.js','assets/题目.js','pages/demo.js','pages/exam.html','shared/app.mjs','shared/questions.js']);
+  assert.ok(progress.some(event=>/当前页面/.test(event.message||'')));
+  assert.match(proposal.changes[0].after,/组合填空题/);
+  assert.equal(await readFile(join(root,project.entry),'utf8'),original);
+  assert.equal(service.proposal(proposal.id).originalFiles['delivery/copy.js'],copy,'complete source state is retained for conflict checks and preview');
+  mode='outside';await assert.rejects(service.generate(project,{request:'修改'}),/范围外/);
+ }finally{t.mock.restoreAll();await rm(root,{recursive:true,force:true});}
+});
+
+test('large individual pages can use exact replacements and oversized page context reports its size',async(t)=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-large-page-')),editor=join(root,'editor');
+ const project={root,entry:'index.html',editsFile:join(root,'.visual-editor','edits.json'),backupDir:join(root,'.visual-editor','backups')};
+ const original='<h1>选择题</h1><!--'+ 'x'.repeat(2*1024*1024)+'-->';let calls=0;
+ try{
+  await writeFile(join(root,project.entry),original);
+  const service=createAIService(editor);await service.settings({endpoint:'http://127.0.0.1:8317/v1',model:'test',apiKey:'test-only-key'});
+  t.mock.method(globalThis,'fetch',async(_url,options)=>{
+   calls++;assert.equal(JSON.parse(JSON.parse(options.body).messages[1].content).files[project.entry],original);
+   return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({edits:[{path:project.entry,before:'<h1>选择题</h1>',after:'<h1>填空题</h1>'}]})}}]}));
+  });
+  const proposal=await service.generate(project,{request:'修改题型'});
+  await service.apply(project,{id:proposal.id,verified:true});
+  assert.equal(await readFile(join(root,project.entry),'utf8'),original.replace('<h1>选择题</h1>','<h1>填空题</h1>'));
+  await writeFile(join(root,project.entry),'x'.repeat(10*1024*1024));
+  await assert.rejects(service.generate(project,{request:'修改题型'}),error=>error.statusCode===413&&/当前页面/.test(error.message)&&/10MB/.test(error.message)&&/index.html/.test(error.message));
+  assert.equal(calls,1,'oversized context is rejected before transport');
+ }finally{t.mock.restoreAll();await rm(root,{recursive:true,force:true});}
+});
 test('AI generation explains connection failures and leaves source untouched',async(t)=>{
  const root=await mkdtemp(join(tmpdir(),'ai-connection-')),editor=join(root,'editor');
  const original='<!doctype html><h1 id="title">Original</h1>';

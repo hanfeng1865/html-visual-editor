@@ -1,6 +1,7 @@
 import {findTemplateText} from './template-text.mjs';
+import {findTemplateSource} from './template-source.mjs';
 // Shared by the inspector, mutation guard and source compiler.
-export function createSaveabilityChecker(sourceDoc, patches = {}, liveDoc = null, appliedPatches = patches) {
+export function createSaveabilityChecker(sourceDoc, patches = {}, liveDoc = null, appliedPatches = patches, {files={},entry='index.html'} = {}) {
   const insertedDocs = Object.values(patches).filter(patch => patch.insert).map(patch =>
     new DOMParser().parseFromString(/^(?:\s*)<(?:td|th|tr)\b/i.test(patch.insert.html) ? `<table><tbody>${/^\s*<tr\b/i.test(patch.insert.html)?patch.insert.html:`<tr>${patch.insert.html}</tr>`}</tbody></table>` : patch.insert.html, 'text/html'));
   const matches = (doc, selector) => {
@@ -9,6 +10,16 @@ export function createSaveabilityChecker(sourceDoc, patches = {}, liveDoc = null
   const blocked = reason => ({kind:'blocked', reason});
   const stable = selector => /^#(?:\\[0-9a-fA-F]{1,6}\s?|\\.|[^\s#.\[\]:>+~,])+$/.test(selector) || /^\[data-ve-node="[^"\\]+"\]$/.test(selector);
   const bindings=new Map();
+  const sourceBindings=new Map();
+  function sourceBinding(selector){
+    if(sourceBindings.has(selector))return sourceBindings.get(selector);
+    const patch=Object.values(patches).find(p=>p.selector===selector),applied=Object.values(appliedPatches).find(p=>p.selector===selector);
+    const live=liveDoc && matches(liveDoc,selector),source=matches(sourceDoc,selector);
+    const existing=patch?.templateSource || applied?.templateSource;
+    const binding=existing?findTemplateSource(sourceDoc,null,files,entry,existing)
+      :live?.length===1 && (!source.length || source[0].closest('[data-ve-dynamic]') || live[0].closest('[data-ve-dynamic]'))?findTemplateSource(sourceDoc,live[0],files,entry):null;
+    sourceBindings.set(selector,binding);return binding;
+  }
   function templateBinding(selector){
     if(bindings.has(selector))return bindings.get(selector);
     const patch=Object.values(patches).find(p=>p.selector===selector),applied=Object.values(appliedPatches).find(p=>p.selector===selector);
@@ -23,7 +34,7 @@ export function createSaveabilityChecker(sourceDoc, patches = {}, liveDoc = null
     }
     bindings.set(selector,binding);return binding;
   }
-  function target(selector) {
+  function target(selector, appearance=true) {
     const live = liveDoc ? matches(liveDoc, selector) : [];
     const source = matches(sourceDoc, selector);
     const added = insertedDocs.flatMap(doc => matches(doc, selector));
@@ -33,6 +44,8 @@ export function createSaveabilityChecker(sourceDoc, patches = {}, liveDoc = null
       const binding=templateBinding(selector);
       if(binding)return {kind:'template',node:live[0],binding,reason:'文字可直接写回页面生成模板，刷新后仍生效；其他修改会单独检查'};
     }
+    const templateSource=appearance && sourceBinding(selector);
+    if(templateSource)return {kind:'template-source',node:live[0],binding:templateSource,reason:`样式会直接写入 ${templateSource.file} 的生成模板；保存后刷新仍保留，不需要 AI 或页面调整记录`};
     if (live[0]?.closest('[data-ve-dynamic]') || source[0]?.closest('[data-ve-dynamic]'))
       return blocked('此区域由页面脚本持续更新，请修改其生成代码');
     if (source.length) {
@@ -46,6 +59,8 @@ export function createSaveabilityChecker(sourceDoc, patches = {}, liveDoc = null
     return {kind:'runtime', node:live[0], reason:'修改会保存到 HTML 内的调整记录，打开页面时自动恢复；请保留元素标识'};
   }
   function check(patch) {
+    const fields=Object.keys(patch).filter(field=>!['selector','ai','templateText','templateSource'].includes(field));
+    if(fields.length && fields.every(field=>field==='styles' || field==='text' && templateBinding(patch.selector)) && sourceBinding(patch.selector))return null;
     if('tableColumns' in patch) {
       const source=matches(sourceDoc,patch.selector),live=liveDoc?matches(liveDoc,patch.selector):[];
       if(source.length>1 || live.length>1 || !source.length && !stable(patch.selector)
@@ -54,10 +69,11 @@ export function createSaveabilityChecker(sourceDoc, patches = {}, liveDoc = null
         || new Set(patch.tableColumns.map(rule=>rule.index)).size!==patch.tableColumns.length)return '删列规则无效，请重新选择表格列';
       if(Object.keys(patch).every(field=>['selector','ai','tableColumns'].includes(field)))return null;
     }
-    const status = target(patch.selector);
+    const status = target(patch.selector,false);
     if (status.kind === 'blocked') return status.reason;
+    if(status.kind==='template-source')return '样式可直接写回生成源码；此内容或结构修改需要修改生成逻辑';
     if(status.kind==='template'){
-      const fields=Object.keys(patch).filter(field=>!['selector','ai','templateText'].includes(field));
+      const fields=Object.keys(patch).filter(field=>!['selector','ai','templateText','templateSource'].includes(field));
       return fields.every(field=>field==='text')?null:'此动态组件的文字可直接保存；其他修改需要修改生成逻辑';
     }
     const node = status.node;
@@ -82,11 +98,11 @@ export function createSaveabilityChecker(sourceDoc, patches = {}, liveDoc = null
     if (patch.icon && status.kind !== 'runtime' && !node?.hasAttribute('data-lucide'))
       return '此图标没有可保存的图标声明，请修改图标源码';
     for (const parent of new Set([patch.insert?.parent, patch.position?.parent].filter(Boolean))) {
-      const container = target(parent);
+      const container = target(parent,false);
       if (container.kind === 'blocked') return container.reason;
       if (container.kind === 'runtime') return '目标容器由脚本生成，暂不支持在其中新增或重排组件；请修改生成代码';
     }
     return null;
   }
-  return {target, check, templateBinding};
+  return {target, check, templateBinding, sourceBinding};
 }

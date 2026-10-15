@@ -52,7 +52,12 @@ try {
  }
  await page.setViewportSize({width:1500,height:1000});
  // Keep the panel open while changing selection in the main interface.
- await page.waitForTimeout(300);await f.locator('#number').click({position:{x:8,y:8},modifiers:['Alt']});assert.equal(await f.locator('#number.ve-selected').count(),1);assert.equal(await page.locator('#ai-chat-input').isVisible(),true);assert.equal(await page.locator('#text-toolbar').isVisible(),false);
+ await page.locator('#clear-selection').click();await page.waitForTimeout(300);await f.locator('#number').click({position:{x:8,y:8},modifiers:['Alt']});assert.equal(await f.locator('#number.ve-selected').count(),1);assert.equal(await page.locator('#ai-chat-input').isVisible(),true);await page.locator('#text-toolbar').waitFor({state:'visible'});assert.equal(await page.locator('#text-toolbar').isVisible(),true,'AI 侧栏打开时选中文字仍显示快捷工具栏');
+ const originalSize=await f.locator('#number').evaluate(el=>parseFloat(getComputedStyle(el).fontSize));
+ await page.locator('[data-text-action="size-up"]').click();
+ assert.equal(await f.locator('#number').evaluate(el=>parseFloat(getComputedStyle(el).fontSize)),originalSize+1,'浮窗可以调整字号');
+ await page.locator('[data-text-action="bold"]').click();
+ assert.equal(await f.locator('#number').evaluate(el=>getComputedStyle(el).fontWeight),'700','浮窗可以调整粗体');
  assert.equal(await page.locator('#inspector-fields').isVisible(),true,'AI 打开时右侧属性仍可编辑');
  await page.locator('#ai-close').click();await page.waitForFunction(()=>!document.querySelector('.editor-main').classList.contains('ai-open'));
  assert.equal(await page.locator('#inspector-fields').isVisible(),true,'关闭 AI 后恢复组件属性');

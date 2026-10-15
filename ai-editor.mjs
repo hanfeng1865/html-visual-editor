@@ -38,13 +38,15 @@ export function loadAIFrame(frame,url,container=null) {
 const viewHistories=new WeakMap(),restoredViews=new WeakMap();
 function isViewControl(element) {
   if(!element || element.disabled)return false;
-  if(element.matches('button') && element.type!=='button')return false;
+  // An omitted type outside a form cannot submit; many dialog entry buttons
+  // use that markup. Explicit submit/reset buttons and form submits stay excluded.
+  if(element.matches('button') && element.type!=='button' && (element.form || element.hasAttribute('type')))return false;
   if(element.matches('[role="tab"]'))return true;
   if(element.matches('a[href]')) {
     const url=new URL(element.href,element.ownerDocument.URL),current=new URL(element.ownerDocument.URL);
     return url.origin===current.origin && url.pathname===current.pathname && url.search===current.search;
   }
-  return element.matches('button') && /^(查看|详情|返回(?:列表)?|返回车辆列表|关闭)$/.test(element.textContent.trim());
+  return element.matches('button') && /^(查看|详情|设置范围|回收列表|查看结果|预览|返回(?:列表)?|返回车辆列表|关闭)$/.test(element.textContent.trim());
 }
 export function trackAIView(doc,selectorFor) {
   const history=[];viewHistories.set(doc,history);
@@ -117,7 +119,14 @@ export async function verifyAIPage(doc, pending, baselineDoc=null) {
         element=matches[0] && matches.every(node=>node===matches[0])?matches[0]:null;
       }
     }
-    if(patch.deleted){if(element)failures.push(patch.selector+'：组件仍存在');continue;}
+    if(patch.deleted){
+      // Source generators may retain record content as an explicit tombstone.
+      // A hidden tab/dialog or an ineffective marker alone is not a deletion.
+      const tombstone=element?.closest('[data-ve-deleted][hidden]');
+      const removed=tombstone && doc.defaultView.getComputedStyle(tombstone).display==='none';
+      if(element && !removed)failures.push(patch.selector+'：组件仍存在');
+      continue;
+    }
     if(!element){failures.push(patch.selector+'：找不到组件');continue;}
     if(patch.insert) {
       const template=doc.createElement('template'),tag=/^\s*<([a-z][a-z0-9]*)/i.exec(patch.insert.html)?.[1];

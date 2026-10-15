@@ -27,7 +27,7 @@ export async function readSourceState(project,editorDir) {
   await walk();
   const patches=await readVisualEdits(project.editsFile);
   const hashes=Object.fromEntries(Object.keys(files).sort().map(path=>[path,hash(files[path])]));
-  return {source:files[project.entry],files,hashes,revision:hash(JSON.stringify([hashes,patches])),entry:project.entry};
+  return {source:files[project.entry],files,hashes,revision:hash(JSON.stringify([hashes,patches])),entry:project.entry,sourceWriteVersion:2};
 }
 async function snapshot(project,current,patches,kind,id=`code-${Date.now()}-${randomUUID()}`,changeSummary) {
   const record={id,createdAt:new Date().toISOString(),entry:project.entry,files:current.files,patches,kind,...(changeSummary?{changeSummary}:{})};
@@ -85,16 +85,22 @@ async function writeTransaction(project,files,patches) {
     throw error;
   }
 }
-export async function saveSource(project,editorDir,{revision,html,draft,pending={version:1,patches:{}}}) {
+export async function saveSource(project,editorDir,{revision,html,files={},draft,pending={version:1,patches:{}}}) {
   return exclusive(project.root,async()=>{
     validateVisualEdits(draft);
     validateVisualEdits(pending);
     if(typeof html!=='string' || !html.trim() || Buffer.byteLength(html)>10*1024*1024)throw fail('HTML 内容无效或超过 10MB',400);
     const current=await ensureSourceOrigin(project,editorDir);
     if(current.revision!==revision)throw fail('源码又发生变化，请重新检查后保存');
+    if(!files || typeof files!=='object' || Array.isArray(files))throw fail('源码文件格式无效',400);
+    let size=0;
+    for(const [entry,value] of Object.entries(files)){
+      if(!Object.hasOwn(current.files,entry) || !/\.(js|mjs|css)$/i.test(entry) || typeof value!=='string' || !value.trim())throw fail('不能写入项目范围外的源码文件',400);
+      size+=Buffer.byteLength(value);if(size>20*1024*1024)throw fail('源码修改超过 20MB',413);
+    }
     await snapshot(project,current,draft.patches,'before-save');
     if((await readSourceState(project,editorDir)).revision!==revision)throw fail('备份期间源码发生变化，未写入任何修改');
-    await writeTransaction(project,{[project.entry]:html},pending.patches);
+    await writeTransaction(project,{...files,[project.entry]:html},pending.patches);
     const result=await readSourceState(project,editorDir);await snapshot(project,result,pending.patches,'saved',undefined,summarizeSourceChanges(current.files,result.files));return result;
   });
 }

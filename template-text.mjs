@@ -1,13 +1,13 @@
 // Locate static HTML text inside JavaScript literals, excluding comments,
 // regular expressions and template interpolation code.
-export function staticTemplateLeaves(source) {
+export function staticTemplateSegments(source) {
   const segments=[];let i=0;
   function string(quote) {
     i++;let start=i;
     while(i<source.length){
       if(source[i]==='\\'){i+=2;continue;}
-      if(source[i]===quote){segments.push(source.slice(start,i));i++;return;}
-      if(quote==='\x60' && source[i]==='$' && source[i+1]==='{'){segments.push(source.slice(start,i));i+=2;code(true);start=i;continue;}
+      if(source[i]===quote){segments.push({text:source.slice(start,i),start,quote});i++;return;}
+      if(quote==='\x60' && source[i]==='$' && source[i+1]==='{'){segments.push({text:source.slice(start,i),start,quote});i+=2;code(true);start=i;continue;}
       i++;
     }
   }
@@ -25,6 +25,10 @@ export function staticTemplateLeaves(source) {
     }
   }
   code();
+  return segments;
+}
+export function staticTemplateLeaves(source) {
+  const segments=staticTemplateSegments(source).map(segment=>segment.text);
   const leaves=[];
   for(const segment of segments)for(const match of segment.matchAll(/<([a-z][a-z0-9-]*)\b[^<>]*>([^<>]+)<\/\1\s*>/gi)){
     if(match[2].includes('\\') || ['script','style','textarea','title'].includes(match[1].toLowerCase()))continue;
@@ -36,6 +40,7 @@ export function encodeTemplateText(text){
   return String(text).replace(/[&<>"'\\\x60$\r\n]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','\\':'&#92;','\x60':'&#96;','$':'&#36;','\r':'&#13;','\n':'&#10;'}[c]));
 }
 const templateIndexes=new WeakMap();
+export function invalidateTemplateTextIndex(doc){templateIndexes.delete(doc);}
 function templateIndex(doc){
   if(templateIndexes.has(doc))return templateIndexes.get(doc);
   const all=[],byLabel=new Map(),scripts=[...doc.querySelectorAll('script')];

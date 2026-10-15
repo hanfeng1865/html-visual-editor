@@ -1,3 +1,4 @@
+import {generateLogicNote} from './logic-note-ai.mjs';
 import {createGenerationSkills} from './generation-skills.mjs';
 import {checkProjectInteractions} from './interaction-check.mjs';
 import {createHash} from 'node:crypto';
@@ -158,6 +159,10 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
         return json(response, 200, folder ? await workspaces.open(folder) : { cancelled:true });
       }
       if (url.pathname === '/api/projects/current' && request.method === 'GET') return json(response, 200, await workspaces.describe(workspaceId, entry));
+      if(url.pathname==='/api/change-annotations/ai' && request.method==='POST') {
+        const project=await workspaces.describe(url.searchParams.get('project')||'builtin',url.searchParams.get('entry')||undefined);
+        return json(response,200,await generateLogicNote(project,await readJsonBody(request,2*1024*1024),{ai}));
+      }
       if(url.pathname==='/api/prd-annotations'||url.pathname==='/api/prd-annotations/generate') {
         const project=await workspaces.describe(workspaceId,entry);
         if(request.method==='GET'&&url.pathname==='/api/prd-annotations')return json(response,200,await prd.read(project));

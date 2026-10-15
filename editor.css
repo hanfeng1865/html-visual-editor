@@ -103,8 +103,8 @@ button { cursor:pointer; }
 .annotation-card:last-child { margin-bottom:0; }.annotation-card.active { border-color:#2f80ed; box-shadow:0 0 0 3px #2f80ed18; transform:translateX(-2px); }
 .annotation-card-number { position:absolute; left:12px; top:12px; display:grid; place-items:center; width:24px; height:24px; border-radius:50%; color:#fff; background:#2f80ed; font:700 12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
 .annotation-card-title { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#704c19; font-size:12px; font-weight:700; }.annotation-card-title button { border:0; padding:2px 4px; border-radius:4px; color:#246dcc; background:transparent; font-size:11px; cursor:pointer; }.annotation-card-title button:hover { background:#eaf2ff; }
-.annotation-card-note { margin:7px 0 0; color:#6e5b3d; font-size:11px; line-height:1.65; white-space:pre-wrap; word-break:break-word; }.annotation-card-empty { color:#aa9875; }
-.annotation-card textarea { display:block; width:100%; min-height:78px; margin-top:7px; padding:7px 8px; border:1px solid #e4d4aa; border-radius:6px; outline-color:#2f80ed; resize:vertical; color:#594727; background:#fff; font:11px/1.55 inherit; }
+.annotation-card-note { margin:7px 0 0; color:#6e5b3d; font-size:12px; line-height:1.75; white-space:normal; word-break:break-word; }.annotation-card-empty { color:#aa9875; }
+.annotation-card textarea { display:block; width:100%; min-height:260px; margin-top:10px; padding:12px; border:1px solid #e4d4aa; border-radius:6px; outline-color:#2f80ed; resize:vertical; color:#594727; background:#fff; font-family:inherit; font-size:14px; line-height:1.75; overflow-y:hidden; }
 .annotation-card-actions { display:flex; justify-content:flex-end; gap:6px; margin-top:7px; }.annotation-card-actions button { height:25px; padding:0 8px; border:1px solid #d9c99c; border-radius:5px; color:#77623c; background:#fff; font-size:10px; cursor:pointer; }.annotation-card-actions button.primary { border-color:#2f80ed; color:#fff; background:#2f80ed; }
 @media(max-width:1100px) { .canvas-area.annotation-open { padding-right:284px; }.annotation-rail { width:270px; } }
 @media(max-width:760px) { .canvas-area.annotation-open { padding-right:8px; }.annotation-rail { top:58px; right:8px; bottom:8px; width:min(280px,calc(100% - 16px)); } }
@@ -830,3 +830,34 @@ button { cursor:pointer; }
 #ai-pending-settings{border:1px solid #e4e9ef;border-radius:11px;}
 #ai-pending-footer{padding:0 26px 16px;color:var(--muted);}
 #ai-pending-dialog button:focus-visible,#ai-pending-dialog summary:focus-visible{outline:3px solid #2468d830;outline-offset:3px;}
+.annotation-ai-actions { justify-content:flex-start; flex-wrap:wrap; margin-top:10px; }
+.annotation-ai-actions button { color:#246dcc; border-color:#bed3ee; background:#f3f7ff; }
+.annotation-card-actions button:disabled { opacity:.55; cursor:wait; }
+.annotation-ai-status { color:#876735; font-size:11px; line-height:1.6; white-space:pre-wrap; }
+.annotation-ai-preview { margin-top:10px; padding:9px; border:1px solid #bed3ee; border-radius:6px; background:#f3f7ff; font-size:11px; }
+.annotation-ai-preview[hidden],.annotation-ai-status[hidden] { display:none; }
+
+.annotation-note-line { display:block; white-space:pre-wrap; }
+.annotation-note-line + .annotation-note-line { margin-top:8px; }
+.annotation-note-label { font-weight:650; color:#594727; }
+
+/* Give note editing room without changing the prototype viewport. */
+.annotation-rail:has(.annotation-card.is-editing) { width:min(560px,calc(100% - 28px)); }
+.annotation-card.is-editing { padding-left:12px; }
+.annotation-card.is-editing .annotation-card-title { padding-left:30px; min-height:24px; }
+.annotation-card.is-editing > div:has(> textarea) > .annotation-card-actions { position:sticky; bottom:0; padding:8px 0; background:#fffdf6; }
+
+.annotation-card-note.annotation-note-collapsed { max-height:144px; overflow:hidden; }
+.annotation-note-toggle { display:block; border:0; padding:5px 0; margin-top:5px; background:transparent; color:#246dcc; font-size:12px; cursor:pointer; }
+.annotation-note-toggle[hidden] { display:none; }
+
+.annotation-reader { box-sizing:border-box; width:min(840px,calc(100vw - 40px)); max-width:none; max-height:84vh; padding:0; overflow:hidden; border:1px solid #dce3ed; border-radius:14px; color:#263448; background:#fff; box-shadow:0 24px 80px #17243b38; }
+.annotation-reader[open] { display:flex; flex-direction:column; }
+.annotation-reader::backdrop { background:#17243b66; }
+.annotation-reader-header { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; gap:16px; padding:20px 28px; border-bottom:1px solid #e8edf3; }
+.annotation-reader-header h2 { margin:0; font-size:18px; font-weight:650; }
+.annotation-reader-header button { border:1px solid #dce3ed; border-radius:6px; padding:7px 14px; background:#f8fafc; color:#475569; font-size:13px; cursor:pointer; }
+.annotation-reader-content { min-height:0; padding:24px 32px 32px; overflow:auto; overscroll-behavior:contain; font-size:16px; line-height:1.9; overflow-wrap:anywhere; }
+.annotation-reader-content .annotation-note-line + .annotation-note-line { margin-top:16px; }
+.annotation-reader-content .annotation-note-label { color:#263448; }
+@media(max-width:600px) { .annotation-reader { width:calc(100vw - 20px); max-height:90vh; }.annotation-reader-header { padding:16px 20px; }.annotation-reader-content { padding:20px; } }

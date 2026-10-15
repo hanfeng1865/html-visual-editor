@@ -56,7 +56,7 @@ try {
   assert.equal(await page.locator('#saveability-section').getAttribute('data-kind'),'source');
   if(process.env.SAVEABILITY_SCREENSHOT)await page.screenshot({path:process.env.SAVEABILITY_SCREENSHOT});
   await select('#generated');
-  assert.equal(await page.locator('#saveability-section').getAttribute('data-kind'),'runtime');
+  assert.equal(await page.locator('#saveability-section').getAttribute('data-kind'),'template-source');
   assert.equal(await page.locator('#prop-text').isEnabled(),true);
   await page.locator('#prop-text').fill('Saved runtime');await page.locator('#prop-text').dispatchEvent('change');
   await select('#child');
@@ -67,7 +67,7 @@ try {
   await page.locator('[data-structure-tab="insert"]').click();
   await page.locator('[data-insert="text"]').click();
   assert.notEqual(await f.locator('#runtime-container').innerHTML(),before);
-  await select('#中文标识');assert.equal(await page.locator('#saveability-section').getAttribute('data-kind'),'runtime');
+  await select('#中文标识');assert.equal(await page.locator('#saveability-section').getAttribute('data-kind'),'template-source');
   await select('#empty');
   await page.locator('[data-insert="text"]').click();
   assert.equal(await page.locator('#saveability-section').getAttribute('data-kind'),'added');
@@ -78,7 +78,7 @@ try {
   const saved=page.waitForResponse(response=>response.url().includes('/api/source-save') && response.request().method()==='POST');
   await page.locator('#save-button').click();assert.equal((await saved).status(),200);
   await page.waitForFunction(()=>!document.querySelector('#source-dialog').open&&!document.querySelector('#save-button').disabled);
-  await page.locator('#ai-dialog[open]').waitFor();await page.locator('#ai-close').click();
+  await page.locator('#ai-pending-dialog[open]').waitFor();await page.locator('#ai-pending-close').click();
   const html=await readFile(join(project,'index.html'),'utf8');
   assert.match(html,/Saved static/);assert.match(html,/Saved runtime/);assert.match(html,/AI unstable/);assert.doesNotMatch(html,/AI rewritten/);
   await page.reload();await f.locator('body[data-ve-editor-ready="true"]').waitFor();
@@ -86,10 +86,10 @@ try {
   page.on('request',request=>{if(request.url().includes('/api/projects/export'))exports++;});
   page.on('download',()=>downloads++);
   await page.locator('#export-menu-button').click();await page.locator('#export-html-button').click();
-  await page.locator('#ai-dialog[open]').waitFor();
+  await page.locator('#ai-pending-dialog[open]').waitFor();
   assert.equal(exports,0);assert.equal(downloads,0);
   assert.match(await page.locator('#save-status').textContent(),/部分修改已保存.*等待 AI 写回/);
-  await page.locator('#ai-close').click();
+  await page.locator('#ai-pending-close').click();
   assert.equal(await f.locator('#generated').textContent(),'Saved runtime');
   assert.equal(await f.locator('.unstable').textContent(),'AI unstable');
   assert.equal(await f.locator('#rewritten').textContent(),'AI rewritten');

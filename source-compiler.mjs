@@ -1,7 +1,8 @@
-import {applyTemplateText,findTemplateText} from './template-text.mjs';
+import {applyTemplateText,findTemplateText,invalidateTemplateTextIndex} from './template-text.mjs';
 import {createVisualPatchEngine} from './visual-patch-engine.mjs';
 import {readSourcePatches, mergeSourcePatches, writeSourcePatches} from './source-runtime.mjs';
 import {createSaveabilityChecker} from './saveability.mjs';
+import {compileTemplateStyles} from './template-source.mjs';
 const parse=html=>new DOMParser().parseFromString(html,'text/html');
 const find=(doc,selector)=>{try{return doc.querySelector(selector);}catch{return null;}};
 const compact=value=>String(value??'').slice(0,220);
@@ -9,7 +10,7 @@ const compact=value=>String(value??'').slice(0,220);
 export function compileSource({base,current,patches,choices={},projectId,skipUnsupported=false}) {
   const before=parse(base.source),doc=parse(current.source),changes=structuredClone(patches),conflicts=[],unsupported=[];
   const runtimeChanges = {};
-  const checker = createSaveabilityChecker(doc, changes);
+  const checker = createSaveabilityChecker(doc, changes, null, changes, {files:current.files,entry:current.entry});
   for (const [key, patch] of Object.entries(changes)) {
     const reason = checker.check(patch);
     if (reason) {
@@ -25,6 +26,12 @@ export function compileSource({base,current,patches,choices={},projectId,skipUns
     delete patch.tableColumns;
     if(Object.keys(patch).every(field=>['selector','ai'].includes(field)))delete changes[key];
   }
+  const templateStyles=[];
+  for(const [key,patch] of Object.entries(changes))if(patch.templateSource){
+    if(patch.styles)templateStyles.push({templateSource:patch.templateSource,styles:patch.styles});
+    delete patch.styles;delete patch.templateSource;
+    if(Object.keys(patch).every(field=>['selector','ai'].includes(field)))delete changes[key];
+  }
   const templateChanges=[];
   for(const [key,patch] of Object.entries(changes))if(patch.templateText && 'text' in patch && findTemplateText(doc,null,patch.templateText)){
     templateChanges.push({binding:patch.templateText,text:patch.text});delete patch.text;delete patch.templateText;
@@ -36,8 +43,8 @@ export function compileSource({base,current,patches,choices={},projectId,skipUns
     conflicts.push({id,label,before:compact(old),code:compact(code),editor:compact(edit),codeOnly});
   }
   const changedDependencies=Object.keys({...base.hashes,...current.hashes}).filter(path=>path!==current.entry && base.hashes[path]!==current.hashes[path]);
-  if(changedDependencies.length && Object.values(changes).some(patch=>patch.styles)) {
-    conflict('dependencies','外部样式或脚本已修改',changedDependencies.join('、'),'使用最新 CSS/JS，不叠加旧的样式调整','保留 CSS/JS 的修改，并应用编辑器的样式调整',()=>{Object.values(changes).forEach(patch=>delete patch.styles);});
+  if(changedDependencies.length && (templateStyles.length || Object.values(changes).some(patch=>patch.styles))) {
+    conflict('dependencies','外部样式或脚本已修改',changedDependencies.join('、'),'使用最新 CSS/JS，不叠加旧的样式调整','保留 CSS/JS 的修改，并应用编辑器的样式调整',()=>{Object.values(changes).forEach(patch=>delete patch.styles);templateStyles.length=0;});
   }
   const inserted=new Set(Object.values(changes).filter(patch=>patch.insert).map(patch=>patch.selector));
   const insertedDocs=Object.values(changes).filter(patch=>patch.insert).map(patch=>parse(patch.insert.html));
@@ -92,7 +99,14 @@ export function compileSource({base,current,patches,choices={},projectId,skipUns
       for (const name of Object.keys(patch.styles || {})) patch.styles[name] = patch.styles[name].replaceAll(`/project/${projectId}/`, '/');
     }
   }
-  for(const {binding,text} of templateChanges)if(!applyTemplateText(doc,binding,text))return {conflicts:[],unsupported:['模板文字定位已变化，请刷新代码后重新编辑']};
+  const templateResult=compileTemplateStyles(doc,current.files||{},current.entry,templateStyles);
+  if(templateResult.error)return {conflicts:[],unsupported:[templateResult.error]};
+  invalidateTemplateTextIndex(doc);
+  for(const {binding,text} of templateChanges){
+    // A style edit may have changed the opening tag of the same text leaf.
+    const currentBinding=findTemplateText(doc,null,binding) || (()=>{const probe=parse(binding.needle).body.firstElementChild;return findTemplateText(doc,probe);})();
+    if(!currentBinding || !applyTemplateText(doc,currentBinding,text))return {conflicts:[],unsupported:['模板文字定位已变化，请刷新代码后重新编辑']};
+  }
   const savedRuntime = readSourcePatches(doc);
   // Lucide replaces its source declaration with an SVG at runtime.
   for (const patch of Object.values(changes)) {
@@ -108,5 +122,5 @@ export function compileSource({base,current,patches,choices={},projectId,skipUns
   engine.apply(changes);
   writeSourcePatches(doc, mergeSourcePatches(savedRuntime, runtimeChanges));
   doc.querySelectorAll('template[id^="ve-deleted-"]').forEach(node=>node.remove());
-  return {html:(doc.doctype?`<!DOCTYPE ${doc.doctype.name}>\n`:'')+doc.documentElement.outerHTML,conflicts:[],unsupported};
+  return {html:(doc.doctype?`<!DOCTYPE ${doc.doctype.name}>\n`:'')+doc.documentElement.outerHTML,files:templateResult.files,conflicts:[],unsupported};
 }

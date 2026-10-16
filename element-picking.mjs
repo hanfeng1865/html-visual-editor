@@ -31,7 +31,7 @@ function containingComponent(hit,options) {
 function pickFromHit(doc, hit, x, y, {cardSelector, exact=false}) {
   if(!hit || hit.closest('script,style,template,#editor-change-overlay,#editor-box-selection,[data-ve-locked],[contenteditable="true"]'))return null;
   const icon=hit.closest(graphicsSelector);
-  if(icon)return (!exact && icon.closest('[data-chart-type]')) || icon;
+  if(icon)return (!exact && icon.closest('[data-chart-type],[data-editor-component="diagram"]')) || icon;
   const control=hit.closest('input,textarea,select');
   if(control)return control;
   const walker=doc.createTreeWalker(hit,doc.defaultView.NodeFilter.SHOW_TEXT);

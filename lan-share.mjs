@@ -12,7 +12,7 @@ export function lanAddresses() {
 }
 
 // A separate listener serves only shared project assets, never editor APIs.
-const blockedNames=new Set(['node_modules','__pycache__','editor-config.json','ai-config.json','visual-edits.json','change-annotations.json']);
+const blockedNames=new Set(['node_modules','__pycache__','editor-config.json','ai-config.json','visual-edits.json','change-annotations.json','business-diagrams.json']);
 const publicPath=path=>!path.includes('\\') && !path.split('/').some(part=>part.startsWith('.') || blockedNames.has(part));
 export const isShareableFile=(path,mimeTypes)=>publicPath(path) && Object.hasOwn(mimeTypes,extname(path).toLowerCase());
 function reloadScript(prefix,revision,path) {

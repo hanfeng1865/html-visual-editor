@@ -1,14 +1,28 @@
+import {readFileSync} from 'node:fs';
+import {renderLogicNote} from './logic-note-ui.mjs';
+import {openLogicNoteReader} from './logic-note-reader.mjs';
+import {parseLogicNote,applyLogicNoteEdits,serializeLogicNote} from './logic-note-document.mjs';
+import {openDiagramReader} from './diagram-reader.mjs';
+import {normalizeDiagramDocument} from './diagram-presentation.mjs';
+const readerStyles=readFileSync(new URL('./logic-note-reader.css',import.meta.url),'utf8')+'\n'+readFileSync(new URL('./diagram.css',import.meta.url),'utf8')+'\n.annotation-reader,.diagram-dialog{font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif}.annotation-reader *,.diagram-dialog *{box-sizing:border-box}';
 // Read-only manual logic annotations for LAN viewers. No editor APIs or mutations.
-export function mountLogicAnnotations(doc,value){
+export function mountLogicAnnotations(doc,value,readers={renderLogicNote,openLogicNoteReader,openDiagramReader}){
  const win=doc.defaultView;
  const framed=win.frameElement?.id==='share-page-frame';
  const outer=framed?win.parent.document:doc;
  const outerWin=outer.defaultView;
+ if(readers.styles){
+  let sharedStyle=outer.getElementById('share-logic-reader-styles');
+  if(!sharedStyle){sharedStyle=outer.createElement('style');sharedStyle.id='share-logic-reader-styles';outer.head.append(sharedStyle);}
+  sharedStyle.textContent=readers.styles;
+ }
+ const dialogs=new Set();
+ function trackDialog(dialog){dialogs.add(dialog);dialog.addEventListener('close',()=>dialogs.delete(dialog),{once:true});}
  let sidebar=framed?outer.getElementById('share-logic-sidebar'):null;
  if(!sidebar){sidebar=doc.createElement('aside');sidebar.id='share-logic-sidebar';sidebar.style.cssText='position:fixed;right:0;top:0;width:300px;height:100%;z-index:2147483001;background:#fffcf2';doc.body.append(sidebar);}
  const panel=outer.createElement('div');sidebar.replaceChildren(panel);
  const shadow=panel.attachShadow({mode:'open'});
- const style=outer.createElement('style');style.textContent=`:host{display:block;height:100%;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Microsoft YaHei",sans-serif;color:#69532d}*{box-sizing:border-box}.rail{height:100%;overflow:auto;padding:16px 12px;background:#fffcf2}.heading{display:flex;justify-content:space-between;border-bottom:1px solid #f1dfb7;padding-bottom:14px;margin-bottom:12px}.hint{font-size:12px;color:#a68a53}.card{padding:14px;border:1px solid #f0dba3;border-radius:12px;background:#fffef8;margin:0 0 12px;overflow-wrap:anywhere;cursor:pointer}.card.active{box-shadow:0 0 0 2px var(--color)}.title{display:flex;align-items:center;gap:8px;font-weight:700}.number{display:inline-grid;place-items:center;border-radius:50%;width:28px;height:28px;background:var(--color);color:white;flex-shrink:0}p{white-space:pre-wrap;margin:8px 0 0 36px}`;
+ const style=outer.createElement('style');style.textContent=`:host{display:block;height:100%;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Microsoft YaHei",sans-serif;color:#69532d}*{box-sizing:border-box}.rail{height:100%;overflow:auto;padding:16px 12px;background:#fffcf2}.heading{display:flex;justify-content:space-between;border-bottom:1px solid #f1dfb7;padding-bottom:14px;margin-bottom:12px}.hint{font-size:12px;color:#a68a53}.card{padding:14px;border:1px solid #f0dba3;border-radius:12px;background:#fffef8;margin:0 0 12px;overflow-wrap:anywhere;cursor:pointer}.card.active{box-shadow:0 0 0 2px var(--color)}.title{display:flex;align-items:center;gap:8px;font-weight:700}.number{display:inline-grid;place-items:center;border-radius:50%;width:28px;height:28px;background:var(--color);color:white;flex-shrink:0}p{white-space:pre-wrap;margin:8px 0 0 36px}.note{max-height:144px;overflow:hidden;line-height:1.75;font-size:12px}.annotation-note-label{font-weight:700}.actions{display:flex;flex-wrap:wrap;gap:7px;margin:12px 0 0 36px}button{font:inherit;cursor:pointer;color:#246dcc}.reader-toggle{display:block;border:0;padding:5px 0;margin:5px 0 0 36px;background:transparent;font-size:12px}.reader-toggle[hidden]{display:none}.diagram-toggle{border:1px solid #bfd3f4;border-radius:6px;background:#f3f7ff;padding:6px 9px;font-size:12px}`;
  const rail=outer.createElement('div');rail.className='rail';shadow.append(style,rail);
  const overlay=doc.createElement('div');overlay.id='share-logic-overlay';overlay.setAttribute('data-ve-locked','true');overlay.style.cssText='position:fixed;inset:0;z-index:2147483000;pointer-events:none;overflow:visible';doc.body.append(overlay);
  const svg=outer.createElementNS('http://www.w3.org/2000/svg','svg');svg.id='share-logic-connectors';svg.style.cssText='position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:2147483000';outer.body.append(svg);
@@ -98,20 +112,30 @@ function boxViewMatches(doc, box) {
   return activeTabValue(queryPatchElement(doc, box.view.selector)) === box.view.value;
 }
  function renderCards(){
-  const next=JSON.stringify(layout.map(({box,color})=>[box.id,color,value.notes?.[`box:${box.id}`]]));
+  const next=JSON.stringify(layout.map(({box,color})=>[box.id,color,value.notes?.[`box:${box.id}`],value.titles?.[`box:${box.id}`],value.diagrams?.[box.id]]));
   if(next===signature)return;signature=next;cards.clear();rail.replaceChildren();
   const heading=element('div','heading');const title=element('div','',undefined);
   title.append(element('strong','','逻辑说明'),element('div','hint','框选标记与右侧说明对应 · 只读'));
   heading.append(title,element('span','hint',`${layout.length} 项`));rail.append(heading);
   layout.forEach(({box,color},i)=>{
    const card=element('article','card');card.dataset.annotationId=box.id;card.style.setProperty('--color',color);
-   const title=element('div','title');title.append(element('span','number',String(i+1)),element('span','',`逻辑 ${i+1}`));
-   card.append(title,element('p','',value.notes?.[`box:${box.id}`]||'尚未填写说明'));
+   const name=value.titles?.[`box:${box.id}`]||'需求说明';
+   const title=element('div','title');title.append(element('span','number',String(i+1)),element('span','',`逻辑 ${i+1}`+(value.titles?.[`box:${box.id}`]?' · '+name:'')));
+   const text=value.notes?.[`box:${box.id}`]||'尚未填写说明',note=element('p','note');readers.renderLogicNote(note,text);
+   const fold=element('button','reader-toggle','放大查看');fold.type='button';fold.setAttribute('aria-haspopup','dialog');
+   fold.onclick=event=>{event.stopPropagation();const target=queryPatchElement(doc,box.selector);trackDialog(readers.openLogicNoteReader({text,title:`逻辑 ${i+1}`,requirementTitle:name,context:(target?.getAttribute('aria-label')||target?.textContent||'').trim().replace(/\s+/g,' ').slice(0,24),opener:fold}));};
+   card.append(title,note,fold);
+   const diagram=Object.hasOwn(value.diagrams||{},box.id)?value.diagrams[box.id]:null;
+   if(diagram?.html){
+    const actions=element('div','actions'),view=element('button','diagram-toggle','查看业务图解');view.type='button';view.setAttribute('aria-haspopup','dialog');
+    view.onclick=event=>{event.stopPropagation();trackDialog(readers.openDiagramReader({diagram,opener:view}));};actions.append(view);card.append(actions);
+   }
    card.classList.toggle('active',activeId===box.id);card.addEventListener('click',()=>select(box.id));cards.set(box.id,card);rail.append(card);
   });
  }
  function draw(){
   svg.replaceChildren();if(sidebar.hidden)return;
+  for(const card of cards.values())card.querySelector('.reader-toggle').hidden=card.querySelector('.note').scrollHeight<=146;
   svg.setAttribute('viewBox',`0 0 ${outerWin.innerWidth} ${outerWin.innerHeight}`);
   const frameBounds=framed?win.frameElement.getBoundingClientRect():{left:0,top:0,width:win.innerWidth};
   const scale=frameBounds.width/win.innerWidth;
@@ -164,6 +188,7 @@ function boxViewMatches(doc, box) {
  const observer=new win.MutationObserver(records=>{if(records.some(r=>!r.target.closest?.('#share-logic-overlay,#ve-editor-prd,#share-logic-sidebar,#share-logic-connectors,#share-logic-controls')))schedule();});
  observer.observe(doc.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class','hidden','aria-hidden','aria-selected','aria-pressed','open','style']});
  win.addEventListener('pagehide',()=>{
+  for(const dialog of dialogs){dialog.close();dialog.remove();}dialogs.clear();
   observer.disconnect();win.cancelAnimationFrame(scheduled);
   outerWin.removeEventListener('resize',schedule);rail.removeEventListener('scroll',draw);
   controls.remove();svg.remove();if(toggleRail)toggleRail.hidden=true;
@@ -173,5 +198,7 @@ function boxViewMatches(doc, box) {
 }
 export function logicAnnotationsScript(value){
  const data=JSON.stringify(value).replace(/</g,'\\u003c');
- return `<script>(${mountLogicAnnotations.toString()})(document,${data});</script>`;
+ const styles=JSON.stringify(readerStyles).replace(/</g,'\\u003c');
+ const helpers=[parseLogicNote,applyLogicNoteEdits,serializeLogicNote,renderLogicNote,openLogicNoteReader,normalizeDiagramDocument,openDiagramReader].map(fn=>fn.toString()).join('\n');
+ return `<script>(()=>{${helpers}\n(${mountLogicAnnotations.toString()})(document,${data},{renderLogicNote,openLogicNoteReader,openDiagramReader,styles:${styles}});})();</script>`;
 }

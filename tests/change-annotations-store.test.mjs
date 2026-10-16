@@ -2,6 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateAnnotations } from '../change-annotations-store.mjs';
 
+test('requirement names persist separately from text and validate their length',()=>{
+ const base={version:1,hidden:[],boxes:[],notes:{'box:one':'操作：新增账单。'}};
+ assert.deepEqual(validateAnnotations({...base,titles:{'box:one':'新增月份账单'}}).titles,{'box:one':'新增月份账单'});
+ assert.throws(()=>validateAnnotations({...base,titles:{'box:one':42}}),/名称/);
+ assert.throws(()=>validateAnnotations({...base,titles:{'box:one':'长'.repeat(61)}}),/名称/);
+});
+
 test('annotation notes are persisted while older files default to an empty note map', () => {
   assert.deepEqual(validateAnnotations({ version:1, hidden:[], boxes:[] }).notes, {});
 

@@ -6,6 +6,7 @@
   <title>HTML 可视化编辑器</title>
   <link rel="stylesheet" href="editor.css?v=14" />
   <link rel="stylesheet" href="requirements.css?v=1" />
+  <link rel="stylesheet" href="diagram.css?v=1" />
 </head>
 <body>
   <div class="editor-shell">
@@ -31,7 +32,8 @@
         <button id="prd-generate-button" type="button" title="依据当前需求文档，为可见控件生成交互、字段、规则和边界说明">AI 一键标注</button>
         <button id="prd-toggle-button" type="button" aria-pressed="true">隐藏 PRD 标注</button>
         <button id="prd-list-button" type="button">PRD 标注说明</button>
-        <button id="generation-skills-button" type="button" title="维护需求文档和 PRD 标注的生成规范">Skill 管理</button>
+        <button id="diagram-document-button" type="button" title="生成图解组件或独立的业务逻辑说明页">业务逻辑图</button>
+        <button id="generation-skills-button" type="button" title="维护需求文档、PRD 标注和图解的生成规范">Skill 管理</button>
         <button id="ai-button" type="button">AI 待办</button>
         <button id="save-button" class="primary" type="button" title="写入项目中的本地 HTML 文件（⌘/Ctrl+S），未完成的 AI 待办不算源码已保存">保存到项目</button>
         <button id="view-first-button" type="button">查看初版</button>
@@ -55,6 +57,15 @@
       <label>项目<select id="project-select" aria-label="当前项目"><option value="builtin">当前驾驶舱原型</option></select></label>
       <button id="remove-project-button" type="button" title="仅从编辑器列表移除当前项目，不删除原文件夹" disabled>移除项目</button>
       <label>页面<select id="page-select" aria-label="当前 HTML 页面"><option>正在读取…</option></select></label>
+      <div class="canvas-zoom-control"><select id="canvas-zoom" aria-label="画布缩放">
+            <option value="width">铺满宽度</option>
+            <option value="fit">适应窗口</option>
+            <option value="0.5">50%</option>
+            <option value="0.75">75%</option>
+            <option value="1">100%</option>
+            <option value="1.25">125%</option>
+            <option value="1.5">150%</option>
+          </select></div>
       <span id="project-path" title="项目文件夹"></span><span class="source-preserved">保存前自动备份</span>
     </div>
     <div id="project-error" role="alert" hidden></div>
@@ -183,27 +194,13 @@
 
       <section class="canvas-area">
         <button id="element-resize-handle" type="button" title="拖动调整尺寸" aria-label="拖动调整所选元素尺寸" hidden>↘</button>
-        <div class="canvas-status">
+        <div class="canvas-status" hidden>
           <span><i class="status-dot"></i><b id="mode-label">预览模式</b><span id="mode-hint"> · 可直接操作页面</span></span>
+          <span id="canvas-dimensions" hidden></span><span id="zoom-readout" hidden></span>
           <span id="save-status">浏览器草稿自动保存 · 点击“保存到项目”持久化</span>
         </div>
         <div id="source-change-banner" hidden>检测到外部代码修改。草稿已保留，保存时会检查冲突。<button id="source-refresh" type="button">载入最新代码</button></div>
         <div id="interaction-issue" hidden role="alert"><span id="interaction-issue-text"></span><button id="interaction-recover" type="button">撤销最近修改</button><button id="interaction-history" type="button">查看历史版本</button><button id="interaction-dismiss" type="button">收起提示</button></div>
-        <div class="canvas-controls">
-          <span id="canvas-dimensions">桌面 · 1440 × 900</span>
-          <label for="canvas-zoom">缩放</label>
-          <select id="canvas-zoom" aria-label="画布缩放">
-            <option value="width">铺满宽度</option>
-            <option value="fit">适应窗口</option>
-            <option value="0.5">50%</option>
-            <option value="0.75">75%</option>
-            <option value="1">100%</option>
-            <option value="1.25">125%</option>
-            <option value="1.5">150%</option>
-          </select>
-          <span id="zoom-readout"></span>
-          <span class="canvas-tip">页面宽度保持不变 · 长页面在画布内滚动</span>
-        </div>
         <div id="canvas-scroll" class="canvas-scroll"><div id="canvas-stage" class="canvas-stage">
         <div class="canvas-frame desktop" id="canvas-frame">
           <iframe id="prototype-frame" src="about:blank" title="当前 HTML 页面"></iframe>
@@ -299,7 +296,7 @@
           </section>
 
           <section class="property-section" id="structure-section">
-            <h3>结构操作</h3><div class="quick-actions"><button id="duplicate-element" type="button">复制一份</button><button id="toggle-element-visibility" type="button">隐藏元素</button></div>
+            <h3>结构操作</h3><div class="quick-actions"><button id="duplicate-element" type="button">复制一份</button><button id="toggle-element-visibility" type="button">隐藏元素</button><button id="diagram-edit-button" type="button" hidden>AI 修改图解</button></div>
             <p class="field-hint">选中组件后按 ⌘C / Ctrl+C 复制，⌘V / Ctrl+V 粘贴副本。复制保留当前外观和文字。副本中的按钮、数据联动需另行配置。</p>
           </section>
 

@@ -24,7 +24,7 @@ test('visual editor only shows manually drawn change markers', async () => {
   assert.match(script, /annotations\.boxes/);
   assert.match(script, /startBoxSelection/);
   assert.match(script, /editor-box-selection/);
-  assert.match(script, /const storageAnchor = scrollContainer \|\| anchor/);
+  assert.match(script, /const storageAnchor = boxControlAnchor\(scope \|\| doc.body, selectionRect\) \|\| scrollContainer \|\| anchor/);
   assert.match(script, /addDismissButton/);
   assert.match(script, /移除此改动标识/);
   assert.match(script, /annotations\.boxes = annotations\.boxes\.filter/);

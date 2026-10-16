@@ -1,3 +1,4 @@
+import {installDiagramUI} from './diagram-ui.mjs';
 import {mountLogicNoteAI,renderLogicNote} from './logic-note-ui.mjs';
 import {snapshotPRDPage,encodePRDSnapshot} from './prd-annotations-review.mjs';
 import {mergeAITasks} from './ai-task-steering.mjs';
@@ -129,6 +130,7 @@ let toastTimer = 0;
 let mutationTimer = 0;
 let showChanges = false;
 let annotations = { version:1, boxes:[], notes:{}, colors:{} };
+let annotationDiagrams = {};
 let annotationSaveQueue = Promise.resolve();
 let changeRefreshTimer = 0;
 let trackedFrameWindow = null;
@@ -933,21 +935,25 @@ async function loadAnnotations() {
     annotations.boxes ||= [];
     annotations.notes ||= {};
     annotations.colors ||= {};
+    const diagramsResponse=await fetch(projectEndpoint('/api/diagrams/annotations'),{cache:'no-store'});
+    if(!diagramsResponse.ok)throw new Error('无法读取业务图解');
+    annotationDiagrams=await diagramsResponse.json();
   } catch (error) {
     showToast(`${error.message}，请确认本地开发服务已启动`);
   }
 }
 
-function saveAnnotations() {
-  const snapshot = JSON.parse(JSON.stringify(annotations));
-  annotationSaveQueue = annotationSaveQueue.catch(() => {}).then(async () => {
+function saveAnnotations({snapshot:next=annotations,rejectOnError=false}={}) {
+  const snapshot = JSON.parse(JSON.stringify(next));
+  const pending = annotationSaveQueue.catch(() => {}).then(async () => {
     const response = await fetch(projectEndpoint('/api/change-annotations'), {
       method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify(snapshot)
     });
     if (!response.ok) throw new Error('逻辑说明保存失败');
     showToast('逻辑说明已保存到项目');
-  }).catch(error => showToast(error.message));
-  return annotationSaveQueue;
+  });
+  annotationSaveQueue = pending.catch(error => showToast(error.message));
+  return rejectOnError ? pending : annotationSaveQueue;
 }
 
 function queryPatchElement(doc, selector) {
@@ -1204,7 +1210,8 @@ function annotationCardNote(box, index, theme) {
   const title = document.createElement('div');
   title.className = 'annotation-card-title';
   const titleText = document.createElement('span');
-  titleText.textContent = `逻辑 ${index}`;
+  card.dataset.logicLabel=`逻辑 ${index}`;
+  titleText.textContent = annotations.titles?.[noteKey]?`逻辑 ${index} · ${annotations.titles[noteKey]}`:`逻辑 ${index}`;
   const edit = document.createElement('button');
   edit.type = 'button'; edit.textContent = '编辑说明';
   title.append(titleText, edit);
@@ -1215,6 +1222,7 @@ function annotationCardNote(box, index, theme) {
   if (!value) note.classList.add('annotation-card-empty');
   const editor = document.createElement('div'); editor.hidden = true;
   const textarea = document.createElement('textarea');
+  textarea.dataset.contextTitle=(queryPatchElement(frameDocument(),box.selector)?.getAttribute('aria-label')||queryPatchElement(frameDocument(),box.selector)?.textContent||'').trim().replace(/\s+/g,' ').slice(0,24);
   textarea.maxLength = 2000; textarea.value = value; textarea.setAttribute('aria-label','逻辑说明正文');
   textarea.placeholder = '记录这项改动的原因、口径或需要注意的事项…';
   const actions = document.createElement('div'); actions.className = 'annotation-card-actions';
@@ -1242,18 +1250,33 @@ function annotationCardNote(box, index, theme) {
     annotationList.querySelectorAll('.annotation-card').forEach(item => item.classList.toggle('active', item === card));
   });
   card.append(number, title, note, editor);
-  mountLogicNoteAI({key:projectEndpoint('/api/change-annotations')+':'+box.id+':'+JSON.stringify(box),card,editor,textarea,note,edit,cancel,save,onLayoutChange:drawAnnotationConnectors,
+  mountLogicNoteAI({key:projectEndpoint('/api/change-annotations')+':'+box.id+':'+JSON.stringify(box),card,editor,textarea,note,edit,cancel,save,onLayoutChange:drawAnnotationConnectors,requirementTitle:annotations.titles?.[noteKey]||'',
+    onSaveNote:async(value,requirementTitle)=>{
+      const notes={...annotations.notes};if(value)notes[noteKey]=value;else delete notes[noteKey];
+      const titles={...annotations.titles};if(requirementTitle)titles[noteKey]=requirementTitle;
+      await saveAnnotations({snapshot:{...annotations,notes,titles},rejectOnError:true});
+      if(value)annotations.notes[noteKey]=value;else delete annotations.notes[noteKey];
+      annotations.titles=titles;
+    },onNoteSaved:renderChangeMarkers,
     generate:async(mode,originalNote)=>{
+      const endpoint=projectEndpoint('/api/change-annotations/ai');
+      if(mode==='polish'){
+        const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode,note:originalNote})});
+        const result=await response.json();if(!response.ok)throw new Error(result.error||'AI 润色失败');return result;
+      }
       const doc=frameDocument(),layout=annotationLayout.find(item=>item.box.id===box.id);
       if(!doc||!layout)throw new Error('请先显示所框选区域');
       const r=layout.rect;
       const x=Math.max(0,r.left),y=Math.max(0,r.top);
       const region={x,y,width:Math.min(doc.defaultView.innerWidth,r.right)-x,height:Math.min(doc.defaultView.innerHeight,r.bottom)-y};
-      const endpoint=projectEndpoint('/api/change-annotations/ai');
       const snapshot=await encodePRDSnapshot(snapshotPRDPage(doc));
       const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode,note:originalNote,selector:box.selector,region,snapshot})});
       const result=await response.json();if(!response.ok)throw new Error(result.error||'AI 说明生成失败');return result;
     }});
+  const diagramButton=document.createElement('button');diagramButton.type='button';diagramButton.textContent=Object.hasOwn(annotationDiagrams,box.id)?'查看图解':'生成图解';
+  diagramButton.setAttribute('aria-haspopup','dialog');
+  diagramButton.onclick=event=>{event.stopPropagation();diagrams.open({mode:'component',annotationId:box.id,note:textarea.value,selector:box.selector,request:'根据这段逻辑说明生成图解，保留关键条件、异常分支和待确认事项。'});};
+  card.querySelector('.annotation-ai-actions')?.append(diagramButton);
   return card;
 }
 
@@ -1261,6 +1284,7 @@ function drawAnnotationConnectors() {
   if (!annotationRail || annotationRail.hidden || !annotationLayout.length) { annotationConnectors.replaceChildren(); return; }
   const area = canvasArea.getBoundingClientRect();
   const frameBounds = frame.getBoundingClientRect();
+  const listBounds = annotationList.getBoundingClientRect();
   const scale = frameBounds.width / Math.max(1, frame.clientWidth);
   annotationConnectors.setAttribute('viewBox', `0 0 ${Math.max(1, area.width)} ${Math.max(1, area.height)}`);
   annotationConnectors.replaceChildren();
@@ -1271,10 +1295,11 @@ function drawAnnotationConnectors() {
     const markerBounds = marker?.getBoundingClientRect();
     const sourceRect = markerBounds && markerBounds.width > 0 ? markerBounds : rect;
     const cardBounds = card.getBoundingClientRect();
+    if (cardBounds.bottom <= listBounds.top || cardBounds.top >= listBounds.bottom) return;
     const startX = frameBounds.left + sourceRect.right * scale - area.left;
     const startY = frameBounds.top + ((sourceRect.top + sourceRect.bottom) / 2) * scale - area.top;
     const endX = cardBounds.left - area.left;
-    const endY = cardBounds.top + cardBounds.height / 2 - area.top;
+    const endY = Math.max(listBounds.top, Math.min(listBounds.bottom, cardBounds.top + cardBounds.height / 2)) - area.top;
     const bend = Math.max(28, (endX - startX) * .45);
     const path = document.createElementNS('http://www.w3.org/2000/svg','path');
     path.setAttribute('d', `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`);
@@ -1284,6 +1309,28 @@ function drawAnnotationConnectors() {
     annotationConnectors.append(path, dot);
   });
 }
+
+// Keep connections aligned without rebuilding cards or interrupting note editing.
+let annotationConnectorFrame = 0;
+function scheduleAnnotationConnectors() {
+  cancelAnimationFrame(annotationConnectorFrame);
+  annotationConnectorFrame = requestAnimationFrame(drawAnnotationConnectors);
+}
+annotationList.addEventListener('scroll', scheduleAnnotationConnectors, {passive:true});
+new ResizeObserver(scheduleAnnotationConnectors).observe(annotationList);
+// The rail slides into place when opened; its endpoints move during that transition.
+annotationRail.addEventListener('transitionrun', event => {
+  if (event.target !== annotationRail || event.propertyName !== 'transform') return;
+  const follow = () => {
+    drawAnnotationConnectors();
+    if (annotationRail.getAnimations().some(animation => animation.playState === 'running')) {
+      annotationConnectorFrame = requestAnimationFrame(follow);
+    }
+  };
+  cancelAnimationFrame(annotationConnectorFrame);
+  annotationConnectorFrame = requestAnimationFrame(follow);
+});
+annotationRail.addEventListener('transitionend', scheduleAnnotationConnectors);
 
 function renderAnnotationRail(layout) {
   if (!annotationRail || !annotationList) return;
@@ -1359,6 +1406,20 @@ function cancelBoxSelection() {
   boxToggle.textContent = '框选标记';
 }
 
+// Prefer a control enclosed by the selection over its entire section. Section
+// height can change when rows or explanatory content are added or removed.
+function boxControlAnchor(root, rect) {
+  const area = (rect.right - rect.left) * (rect.bottom - rect.top);
+  const candidates = [...root.querySelectorAll('button,select,input,textarea,[role="button"]')].filter(visibleElement);
+  return candidates.map(element => {
+    const bounds = element.getBoundingClientRect();
+    const overlap = Math.max(0, Math.min(rect.right, bounds.right) - Math.max(rect.left, bounds.left))
+      * Math.max(0, Math.min(rect.bottom, bounds.bottom) - Math.max(rect.top, bounds.top));
+    return {element, overlap, size:bounds.width * bounds.height};
+  }).filter(item => item.size > 0 && item.overlap / item.size >= .8 && item.overlap / area >= .5)
+    .sort((a,b) => b.overlap - a.overlap)[0]?.element || null;
+}
+
 function startBoxSelection() {
   const doc = frameDocument();
   if (!doc?.body) return;
@@ -1415,7 +1476,7 @@ function startBoxSelection() {
     }
     const selectionRect = {left,top,right:left+width,bottom:top+height};
     const scrollContainer = boxScrollContainer(anchor, selectionRect);
-    const storageAnchor = scrollContainer || anchor;
+    const storageAnchor = boxControlAnchor(scope || doc.body, selectionRect) || scrollContainer || anchor;
     const bounds = storageAnchor.getBoundingClientRect();
     const anchorWidth = Math.max(storageAnchor.scrollWidth, bounds.width);
     const anchorHeight = Math.max(storageAnchor.scrollHeight, bounds.height);
@@ -2751,6 +2812,7 @@ function toggleConcealed(node) {
 function fillStructureInspector() {
   if(!selectedElement)return;
   const single=selectedElements.size===1;
+  document.getElementById('diagram-edit-button').hidden=!single||!selectedElement.closest('[data-editor-component="diagram"]');
   document.getElementById('duplicate-element').disabled=!single || !structureAllowed(selectedElement);
   document.getElementById('toggle-element-visibility').disabled=!single;
   const patch=state.patches[elementKey(selectorFor(selectedElement))];
@@ -2853,6 +2915,12 @@ function prepareSnapshot(element) {
   });
   for(const node of nodes)for(const attr of ['for','aria-labelledby','aria-describedby','aria-controls','href'])if(node.hasAttribute(attr)) {
     node.setAttribute(attr,node.getAttribute(attr).split(' ').map(value=>value.startsWith('#')?(ids.has(value.slice(1))?'#'+ids.get(value.slice(1)):value):(ids.get(value)||value)).join(' '));
+  }
+  // SVG markers, gradients and clips must follow IDs when a component is copied.
+  for(const node of nodes)for(const attr of [...node.attributes]){
+    const value=attr.value.replace(/url\(\s*(['"]?)#([^\s)'"<>]+)\1\s*\)/g,(match,quote,id)=>ids.has(id)?`url(#${ids.get(id)})`:match);
+    if(value!==attr.value)node.setAttribute(attr.name,value);
+    if(attr.name==='xlink:href'&&attr.value.startsWith('#')&&ids.has(attr.value.slice(1)))node.setAttributeNS('http://www.w3.org/1999/xlink','xlink:href','#'+ids.get(attr.value.slice(1)));
   }
   copy.querySelectorAll('script,style,iframe,object,embed,#editor-change-overlay,#ve-editor-prd').forEach(node=>node.remove());
   return copy;
@@ -3656,6 +3724,46 @@ const requirementsWorkspace=createRequirementsWorkspace({
   getSelection:()=>selectedElement?`${projectConfig?.entry||projectEntry}\n${elementLabel(selectedElement)}\n${selectedElement.outerHTML.slice(0,6000)}`:'',
 });
 installGenerationSkillsUI({notify:showToast});
+const diagrams=installDiagramUI({endpoint:path=>`${path}?${projectParams}`,notify:showToast,
+ onAnnotationSaved:(id,diagram)=>{Object.defineProperty(annotationDiagrams,id,{value:diagram,enumerable:true,configurable:true});renderChangeMarkers();},
+ onBusyChange:busy=>{
+  const button=document.getElementById('diagram-document-button');
+  button.classList.toggle('ai-is-running',busy);button.setAttribute('aria-busy',String(busy));
+  button.title=busy?'业务逻辑图正在处理，点击查看进度':'生成图解组件或独立的业务逻辑说明页';
+ },
+ getContext:options=>{
+  commitCardForm();
+  const chosen=options.selector?frameDocument()?.querySelector(options.selector):selectedElement;
+  const target=options.edit?chosen?.closest('[data-editor-component="diagram"]'):null;
+  const anchor=target||chosen;
+  const parent=target?.parentElement||(isContainer(chosen)&&!chosen.closest('[data-editor-component="diagram"]')?chosen:chosen?.parentElement)||frameDocument()?.body;
+  return {target,parent,anchor,annotationId:options.annotationId,savedDiagram:options.annotationId&&Object.hasOwn(annotationDiagrams,options.annotationId)?annotationDiagrams[options.annotationId]:null,current:target?.outerHTML||'',original:target?.innerHTML||'',
+   text:[options.note?'用户当前逻辑说明：\n'+options.note:'',chosen?'当前选区：'+elementLabel(chosen)+'\n'+chosen.textContent.slice(0,12000):''].filter(Boolean).join('\n\n')};
+ },
+ insert:(html,context)=>{
+  const {parent,target,anchor}=context||{};
+  if(!parent?.isConnected||parent.ownerDocument!==frameDocument()||isLocked(parent))throw new Error('插入位置已变化或被锁定，请关闭后重新选择位置生成。');
+  if(target&&(!target.isConnected||isLocked(target)||target.innerHTML!==context.original))throw new Error('原图解已变化，请重新选择图解后生成，避免覆盖刚才的修改。');
+  if(typeof html!=='string'||html.length>180000)throw new Error('图解内容无效或过大，请精简后重试。');
+  ensureEditMode();commitCardForm();
+  const template=frameDocument().createElement('template');template.innerHTML=html;
+  if(template.content.children.length!==1||!template.content.firstElementChild.matches('[data-editor-component="diagram"]'))throw new Error('未收到有效图解组件');
+  const copy=prepareSnapshot(template.content.firstElementChild);copy.dataset.editorComponent='diagram';
+  const siblings=[...parent.children].filter(node=>node.tagName!=='TEMPLATE');
+  let index=siblings.length,extra=[];
+  if(target){
+   index=siblings.indexOf(target);
+   for(const property of ['position','left','top','right','bottom','width','height','max-width','margin','z-index','transform','order','grid-column','grid-row'])if(target.style.getPropertyValue(property))copy.style.setProperty(property,target.style.getPropertyValue(property));
+   const selector=selectorFor(target);extra=[[elementKey(selector),{selector,deleted:true}]];
+  }else if(anchor?.parentElement===parent)index=siblings.indexOf(anchor)+1;
+  if(!insertSnapshots([{copy,parent,index}],extra))throw new Error('当前区域暂不能插入图解，请选择静态容器后重试。');
+  context.target=patchEngine.resolve(`[data-ve-node="${copy.dataset.veNode}"]`);context.original=context.target?.innerHTML||'';context.anchor=context.target;
+ }
+});
+document.getElementById('diagram-document-button').onclick=()=>diagrams.resume({mode:'document'});
+document.getElementById('diagram-edit-button').onclick=()=>diagrams.open({mode:'component',edit:true,request:'请根据我的修改意见调整这张图解，保留其他业务规则。'});
+const diagramPaletteButton=document.createElement('button');diagramPaletteButton.type='button';diagramPaletteButton.id='diagram-component-button';diagramPaletteButton.innerHTML='<span class="component-icon" aria-hidden="true">◇ → ◇</span><span>AI 图解</span>';
+diagramPaletteButton.onclick=()=>diagrams.open({mode:'component'});document.querySelector('.component-palette').append(diagramPaletteButton);
 
 document.getElementById('requirements-button').onclick=()=>{
   if(!projectConfig){showToast('请先打开 HTML 项目文件夹');return;}

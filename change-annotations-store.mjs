@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 export function validateAnnotations(value) {
   const notes = value?.notes ?? {};
   const colors = value?.colors ?? {};
+  const titles = value?.titles ?? {};
   if (value?.version !== 1 || !Array.isArray(value.hidden) || !Array.isArray(value.boxes)
     || value.hidden.length > 5000 || value.boxes.length > 1000
     || !value.hidden.every(key => typeof key === 'string')
@@ -18,13 +19,16 @@ export function validateAnnotations(value) {
     || !Object.entries(colors).every(([key, color]) => key.length > 0 && key.length <= 500 && ['blue', 'red'].includes(color))) {
     throw new Error('改动标识颜色格式无效');
   }
+  if (!titles || Array.isArray(titles) || typeof titles !== 'object'
+    || Object.keys(titles).length>5000
+    || !Object.entries(titles).every(([key,title])=>key.length>0&&key.length<=500&&typeof title==='string'&&title.trim().length>0&&title.length<=60&&!/[\r\n]/.test(title)))throw new Error('需求名称格式无效（1–60 字）');
   for (const box of value.boxes) {
     if (!box || typeof box.id !== 'string' || typeof box.selector !== 'string'
       || typeof box.cockpit !== 'string' || typeof box.context !== 'string'
       || !['x', 'y', 'width', 'height'].every(key => Number.isFinite(box[key]))
       || box.width <= 0 || box.height <= 0) throw new Error('框选区域格式无效');
   }
-  return { version:1, hidden:[...new Set(value.hidden)], boxes:value.boxes, notes:{...notes}, colors:{...colors} };
+  return { version:1, hidden:[...new Set(value.hidden)], boxes:value.boxes, notes:{...notes}, colors:{...colors},...(Object.keys(titles).length?{titles:{...titles}}:{}) };
 }
 export async function readAnnotations(file) {
   try { return validateAnnotations(JSON.parse(await readFile(file, 'utf8'))); }

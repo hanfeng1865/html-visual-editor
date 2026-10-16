@@ -236,7 +236,7 @@ export function createAIService(editorDir) {
     const saved=await applyAISource(project,editorDir,{revision:value.revision,files:value.files,draft:value.draft});proposals.delete(id);return saved;
   }
   // Requirements conversations share credentials, but never invoke source mutation.
-  async function discussRequirements({instruction,task,images=[]}) {
+  async function discussRequirements({instruction,task,images=[],onProgress}) {
     const options=await inputOptions(),key=credential(options);
     const checked=validateAIContext({images}).images;
     if(Buffer.byteLength(JSON.stringify(task))>2*1024*1024)throw fail('本次需求上下文超过 2MB，请缩小关联页面或资料范围',413);
@@ -246,7 +246,7 @@ export function createAIService(editorDir) {
       // Keep long generations active through gateways while collecting the complete result.
       const response=await modelTransport.fetch(endpoint,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${key}`},body:JSON.stringify({model:options.model,stream:true,messages:[{role:'system',content:instruction},{role:'user',content:checked.length?[{type:'text',text:JSON.stringify(task)},...checked.map(image=>({type:'image_url',image_url:{url:image.url}}))]:JSON.stringify(task)}]}),dispatcher:generationDispatcher,signal:AbortSignal.timeout(generationTimeout),redirect:'error'});
       if(!response.ok)throw fail(`需求分析失败（HTTP ${response.status}）${checked.length?'，请确认接口支持图片输入':''}；已有文档未被覆盖`,502);
-      envelope=await readAIModelResponse(response);
+      envelope=await readAIModelResponse(response,onProgress);
     }catch(error){
       if(error.statusCode)throw error;
       const code=error.cause?.code||error.code;

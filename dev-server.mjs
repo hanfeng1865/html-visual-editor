@@ -1,3 +1,4 @@
+import {createDiagramService} from './diagram-service.mjs';
 import {generateLogicNote} from './logic-note-ai.mjs';
 import {createGenerationSkills} from './generation-skills.mjs';
 import {checkProjectInteractions} from './interaction-check.mjs';
@@ -73,6 +74,7 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
   const workspaces = createWorkspaceManager(projectRoot, { registryDir: join(editorDir, '.editor-workspaces') });
   const skills=createGenerationSkills(editorDir);
   const requirements=createRequirementsService(editorDir,{ai,workspaces,skills});
+  const diagrams=createDiagramService({ai,skills,requirements});
   const prd=createPRDAnnotationsService({ai,requirements,skills});
   const sharedAnnotationsFile=(share,path)=>{
     const id=share.key.slice(0,share.key.indexOf(':'));
@@ -80,7 +82,12 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
     return id==='builtin'?join(projectRoot,'change-annotations.json'):join(share.root,'.visual-editor',pageKey,'change-annotations.json');
   };
   const sharing=createLanShareService({mimeTypes,stateFile:join(editorDir,'.editor-workspaces','lan-shares.json'),
-    readLogic:async(share,path)=>({...await readAnnotations(sharedAnnotationsFile(share,path)),defaultCockpit:share.key.startsWith('builtin:')?'human-admin':'page'}),
+    readLogic:async(share,path)=>{
+      const annotationsFile=sharedAnnotationsFile(share,path);
+      const annotations=await readAnnotations(annotationsFile),saved=await diagrams.annotationDiagrams({annotationsFile});
+      const visible=new Set(annotations.boxes.map(box=>box.id));
+      return {...annotations,diagrams:Object.fromEntries(Object.entries(saved).filter(([id])=>visible.has(id)).map(([id,diagram])=>[id,{title:diagram.title,html:diagram.html}])),defaultCockpit:share.key.startsWith('builtin:')?'human-admin':'page'};
+    },
     readPRD:async(share,path)=>prd.read({annotationsFile:sharedAnnotationsFile(share,path)})
   });
 
@@ -162,6 +169,24 @@ export function createDevServer({ rootDir = configuration.prototypeRoot || edito
       if(url.pathname==='/api/change-annotations/ai' && request.method==='POST') {
         const project=await workspaces.describe(url.searchParams.get('project')||'builtin',url.searchParams.get('entry')||undefined);
         return json(response,200,await generateLogicNote(project,await readJsonBody(request,2*1024*1024),{ai}));
+      }
+      if(url.pathname==='/api/diagrams/annotations' && request.method==='GET') {
+        return json(response,200,await diagrams.annotationDiagrams(await workspaces.describe(workspaceId,entry)));
+      }
+      if(['/api/diagrams/generate','/api/diagrams/save'].includes(url.pathname)) {
+        if(request.method!=='POST')return json(response,405,{error:'不支持此操作'});
+        const project=await workspaces.describe(workspaceId,entry);
+        const body=await readJsonBody(request,2*1024*1024);
+        if(url.pathname.endsWith('/save'))return json(response,200,await diagrams.save(project,body));
+        if(body.stream!==true)return json(response,200,await diagrams.generate(project,body));
+        response.writeHead(200,{'content-type':'text/event-stream; charset=utf-8','cache-control':'no-cache, no-transform','x-accel-buffering':'no'});
+        const emit=event=>{if(!response.destroyed&&!response.writableEnded)response.write(`data: ${JSON.stringify(event)}\n\n`);};
+        const heartbeat=setInterval(()=>emit({type:'heartbeat'}),10000);
+        response.once('close',()=>clearInterval(heartbeat));
+        try{emit({type:'phase',message:'已开始生成，正在准备业务资料。'});const result=await diagrams.generate(project,body,{onProgress:emit});emit({type:'result',result});}
+        catch(error){emit({type:'error',message:error.message||'图解生成失败，请重试'});}
+        finally{clearInterval(heartbeat);response.end();}
+        return;
       }
       if(url.pathname==='/api/prd-annotations'||url.pathname==='/api/prd-annotations/generate') {
         const project=await workspaces.describe(workspaceId,entry);

@@ -4,6 +4,7 @@ export const ICON_CHOICES = [['users','人员'],['calendar-days','日历'],['tim
 export const IMAGE_CHOICES = ['collection.png','customers.png','dashboard.png','declared.png','details.png','ordered.png','pending.png','profit.png','receivable.png','retained.png'];
 
 export function elementLabel(element) {
+  if(element.matches('[data-editor-component="diagram"]'))return '图解 · '+(element.querySelector('h1,h2,h3')?.textContent.trim().slice(0,22)||'业务逻辑');
   if (element.matches('body')) return '页面';
   if (element.matches('.ha-section,.ha-topic')) return element.querySelector('h2,h3,h4')?.textContent.trim().slice(0,22) || '内容板块';
   if (element.matches('main')) return '主内容';

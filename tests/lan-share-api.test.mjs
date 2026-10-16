@@ -4,6 +4,7 @@ import {mkdtemp,mkdir,writeFile,open,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createDevServer} from '../dev-server.mjs';
+import {createHash} from 'node:crypto';
 
 test('LAN share API excludes large spreadsheets and private configuration before export limits',async()=>{
   const temp=await mkdtemp(join(tmpdir(),'lan-share-api-')),project=join(temp,'project'),editorDir=join(temp,'editor');
@@ -37,6 +38,13 @@ test('LAN share API excludes large spreadsheets and private configuration before
     await post(endpoint,annotations);
     assert.notEqual(await revision(),before,'logic changes refresh existing share links');
     assert.match(await(await fetch(new URL('index.html?__share_content=1',url))).text(),/更新后的逻辑说明/);
+    const diagramsFile=join(project,'.visual-editor',createHash('sha256').update('index.html').digest('hex').slice(0,20),'business-diagrams.json');
+    const beforeDiagram=await revision();
+    await writeFile(diagramsFile,JSON.stringify({'manual-1':{title:'已生成账单业务图解',type:'flowchart',html:'<div data-editor-component="diagram"><h2>已生成账单业务图解</h2></div>'}}));
+    const withDiagram=await(await fetch(new URL('index.html?__share_content=1',url))).text();
+    assert.match(withDiagram,/已生成账单业务图解/,'saved diagrams are included in existing shared links');
+    assert.notEqual(await revision(),beforeDiagram,'saved diagram changes refresh existing links');
+    assert.equal((await fetch(new URL('.visual-editor/'+createHash('sha256').update('index.html').digest('hex').slice(0,20)+'/business-diagrams.json',url))).status,404);
     assert.equal((await fetch(new URL('change-annotations.json',url))).status,404);
     assert.equal((await fetch(new URL('api/change-annotations',url),{method:'POST',body:'{}'})).status,405);
     assert.match(await(await fetch(new URL('style.css',url))).text(),/color:red/);

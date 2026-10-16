@@ -18,3 +18,6 @@ coverage/
 playwright-report/
 test-results/
 html-editor-source.zip
+
+# 本地生成预览、截图和验收产物
+/output/

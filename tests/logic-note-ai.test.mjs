@@ -12,8 +12,9 @@ test('manual generation combines page source, dependencies and rendered screensh
   await writeFile(join(root,'js/app.js'),'function openVehicle(){ return "打开新增车辆表单"; }');
   let call;
   const project={root,entry:'index.html'};
-  const input={mode:'polish',note:'新增时车牌号必填',selector:'button',region:{x:10,y:10,width:100,height:40},snapshot:{width:800,height:600,html:'<button style="margin:10px">新增车辆</button>',scrollY:0}};
-  const result=await mod.generateLogicNote(project,input,{ai:{discussRequirements:async value=>{call=value;return {content:'点击新增车辆打开表单；车牌号必填。'};}}});
+  const input={mode:'generate',note:'新增时车牌号必填',selector:'button',region:{x:10,y:10,width:100,height:40},snapshot:{width:800,height:600,html:'<button style="margin:10px">新增车辆</button>',scrollY:0}};
+  const result=await mod.generateLogicNote(project,input,{ai:{discussRequirements:async value=>{call=value;return {title:'新增车辆',content:'点击新增车辆打开表单；车牌号必填。'};}}});
+  assert.equal(result.title,'新增车辆');
   assert.equal(result.content,'点击新增车辆打开表单；车牌号必填。');
   assert.equal(call.task.originalNote,input.note);assert.match(call.task.files['js/app.js'],/openVehicle/);
   assert.match(call.images[0].url,/^data:image\/png;base64,/);assert.match(call.instruction,/产品经理/);assert.match(call.instruction,/待确认/);
@@ -55,4 +56,18 @@ test('large pure data assignments keep field examples and counts without truncat
   assert.match(result.files['data.js'],/plate/);assert.match(result.files['data.js'],/12000/);
   assert.equal(result.files['rules.js'],rules);
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('polishing uses only the current note, without page evidence or a generated title',async()=>{
+ const note='费用月份必填；金额最多两位小数。允许保存空白账单，金额留空。';
+ let call;
+ const result=await mod.generateLogicNote({root:'/does-not-exist',entry:'missing.html'},
+  {mode:'polish',note,snapshot:{invalid:true},selector:'#ignored'},
+  {ai:{discussRequirements:async value=>{call=value;return {title:'不应替换名称',content:'费用月份必填。金额最多保留两位小数。允许保存空白账单，金额可留空。'};}}});
+ assert.deepEqual(call.task,{mode:'polish',originalNote:note});
+ assert.equal(call.images,undefined);
+ assert.match(call.instruction,/不得新增/);
+ assert.match(call.instruction,/保留/);
+ assert.deepEqual(Object.keys(result),['content']);
+ assert.match(result.content,/允许保存空白账单/);
 });

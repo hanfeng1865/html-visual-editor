@@ -24,7 +24,11 @@ try {
   const page=await browser.newPage({viewport:{width:1500,height:1000}}),frame=page.frameLocator('#prototype-frame');
   await page.goto(`${base}/editor/editor.html?project=${projectConfig.id}&entry=index.html`);await frame.locator('body[data-ve-editor-ready=true]').waitFor();
   await page.locator('[data-mode=edit]').click();await frame.locator('#title').click({modifiers:['Alt']});await page.locator('#prop-text').fill('Shared edit');await page.locator('#prop-text').dispatchEvent('change');
-  async function share(){await page.locator('#export-menu-button').click();await page.locator('#share-lan-button').click();await page.waitForFunction(()=>!document.getElementById('share-copy').disabled);return page.locator('#share-link').inputValue();}
+  async function share(){
+    await page.locator('#export-menu-button').scrollIntoViewIfNeeded();
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await page.locator('#export-menu-button').click();await page.locator('#share-lan-button').click();await page.waitForFunction(()=>!document.getElementById('share-copy').disabled);return page.locator('#share-link').inputValue();
+  }
   const link=await share();
   await page.context().grantPermissions(['clipboard-read','clipboard-write'],{origin:base});await page.locator('#share-copy').click();
   await page.waitForFunction(()=>document.getElementById('share-status').textContent.includes('链接已复制'));assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),link);
@@ -36,6 +40,7 @@ try {
   assert.equal(await sharedContent.locator('img').evaluate(el=>el.complete && el.naturalWidth>0),true);await sharedContent.locator('#counter').click();assert.equal(await sharedContent.locator('#number').textContent(),'1');
   assert.equal((await fetch(new URL('/api/projects',localLink))).status,404,'viewers cannot reach editor APIs');
   await page.locator('#share-close').click();
+  await page.locator('[data-mode="edit"]').click();
   await frame.locator('#title').click({modifiers:['Alt']});await page.locator('#prop-text').fill('Saved again');await page.locator('#prop-text').dispatchEvent('change');
   await page.locator('#save-button').click();
   await sharedContent.waitForFunction(()=>document.getElementById('title').textContent==='Saved again');

@@ -41,5 +41,34 @@ try{
  await page.waitForFunction(width=>{const frame=document.getElementById('prototype-frame'),marker=frame.contentDocument.querySelector('.editor-change-marker');return marker&&Math.abs(marker.getBoundingClientRect().width*frame.getBoundingClientRect().width/frame.clientWidth-width)<3;},shrunk.width);
  const restored=await marker.boundingBox();assert.ok(Math.abs(restored.width-shrunk.width)<3,'edited geometry survives reload');
  assert.match(await page.locator('#annotation-rail').textContent(),/说明保留/);
+
+ // A tight control selection must remain attached when its surrounding section grows.
+ await post(endpoint,{version:1,hidden:[],boxes:[],notes:{},colors:{}});
+ await page.reload();await f.locator('body[data-ve-editor-ready=true]').waitFor();
+ await page.locator('#editor-changes-toggle').click();
+ const target=f.locator('#target'),targetBounds=await target.boundingBox();
+ await page.locator('#editor-box-toggle').click();
+ await page.mouse.move(targetBounds.x-3,targetBounds.y-3);await page.mouse.down();
+ await page.mouse.move(targetBounds.x+targetBounds.width+3,targetBounds.y+targetBounds.height+3,{steps:6});await page.mouse.up();
+ await marker.waitFor();
+ await page.waitForFunction(()=>document.querySelector('.annotation-card'));
+ const newBox=await(await fetch(base+endpoint)).json();
+ assert.equal(newBox.boxes[0].selector,'#target','control selection anchors to the control instead of the surrounding section');
+ const checkAlignment=async()=>{
+  const result=await f.locator('#target').evaluate(target=>{
+   const a=target.getBoundingClientRect(),b=document.querySelector('.editor-change-marker').getBoundingClientRect();
+   return {x:b.left-a.left,y:b.top-a.top,width:b.width,height:b.height};
+  });
+  assert.ok(Math.abs(result.x+5)<2&&Math.abs(result.y+5)<2,'marker stays aligned with the selected control');
+  return result;
+ };
+ const initial=await checkAlignment();
+ await f.locator('#area').evaluate(area=>{area.style.height='1800px';});
+ await page.setViewportSize({width:1690,height:1000});
+ await page.waitForTimeout(150);
+ const grown=await checkAlignment();
+ assert.ok(Math.abs(initial.height-grown.height)<2,'surrounding content height does not resize a control marker');
+ await target.evaluate(target=>target.ownerDocument.defaultView.scrollTo(0,60));
+ await page.waitForTimeout(150);await checkAlignment();
  console.log('PASS: compact corner number, grow beyond original anchor, move, shrink and persist manual box');
 }finally{await browser.close();await new Promise(r=>server.close(r));await rm(temp,{recursive:true,force:true});}

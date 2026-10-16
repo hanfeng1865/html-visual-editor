@@ -1,7 +1,7 @@
 import {readFile,writeFile,mkdir,rename} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-const catalog=[{id:'requirements',name:'需求文档',usage:'需求分析、补充理解、回答整理与文档修改预览'},{id:'prd-annotations',name:'PRD 标注说明',usage:'区块说明生成、需求核对与标注修改建议'}];
+const catalog=[{id:'diagram-design',name:'业务图解',usage:'流程、泳道、架构、时序组件与业务逻辑说明页'},{id:'requirements',name:'需求文档',usage:'需求分析、补充理解、回答整理与文档修改预览'},{id:'prd-annotations',name:'PRD 标注说明',usage:'区块说明生成、需求核对与标注修改建议'}];
 const queues=new Map();
 const fail=(message,statusCode=400)=>Object.assign(new Error(message),{statusCode});
 const revision=content=>createHash('sha256').update(content).digest('hex');
